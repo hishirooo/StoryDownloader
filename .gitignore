@@ -12,9 +12,21 @@ venv/
 output/
 results/
 logs/
+
 # Qt Designer compiled UI and resource files
 *.ui.py
 *.qrc.py
+
+# Epub files
+*.epub
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.svg
+*.ttf
+*.otf
+*.opf
 
 # PyInstaller build output
 dist/

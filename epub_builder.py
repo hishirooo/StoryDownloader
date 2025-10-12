@@ -69,9 +69,9 @@ def create_epub(book_url: str,
 
         # 3) Styles
         style_css = (
-            "body{font-family:serif;line-height:1.6} "
-            "img{max-width:100%;height:auto} "
-            "h1{font-size:1.4em;margin:0 0 .6em} "
+            "body{font-family:serif;line-height:1.6}"
+            "img{max-width:100%;height:auto}"
+            "h1{font-size:1.4em;margin:0 0 .6em}"
             "p{margin:.5em 0}"
         )
         _epub_write(z, "OEBPS/Styles/style.css", style_css.encode("utf-8"))
@@ -97,7 +97,9 @@ def create_epub(book_url: str,
             _epub_write(z, "OEBPS/" + fn, xhtml)
             manifest_items.append(f'<item id="chap{i}" href="{fn}" media-type="application/xhtml+xml"/>')
             spine_items.append(f'<itemref idref="chap{i}"/>')
-            navpoints.append(f'<navPoint id="nav{i}" playOrder="{i}"><navLabel><text>{html.escape(c["title"])}</text></navLabel><content src="{fn}"/></navPoint>')
+            navpoints.append(
+                f'<navPoint id="nav{i}" playOrder="{i}"><navLabel><text>{html.escape(c["title"])}</text></navLabel><content src="{fn}"/></navPoint>'
+            )
 
         # 5) Cover (nếu có)
         manifest_cover = ""
