@@ -8,7 +8,10 @@ __pycache__/
 env/
 ENV/
 venv/
-
+# Output directories
+output/
+results/
+logs/
 # Qt Designer compiled UI and resource files
 *.ui.py
 *.qrc.py
