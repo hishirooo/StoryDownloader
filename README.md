@@ -39,7 +39,7 @@ StoryDownloader/
 ## 📌 Ghi chú
 
 - Dự án hiện chưa có release chính thức.
-- Mã nguồn sử dụng 100% HTML (theo thống kê GitHub).
+- Mã nguồn sử dụng 100% Python (theo thống kê GitHub).
 
 ## 📬 Đóng góp
 
