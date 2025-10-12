@@ -12,7 +12,7 @@ venv/
 output/
 results/
 logs/
-
+Hishiro/
 # Qt Designer compiled UI and resource files
 *.ui.py
 *.qrc.py
