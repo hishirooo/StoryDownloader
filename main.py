@@ -184,26 +184,47 @@ def main():
                 save_all_chapters_to_txt_split(title, chapters, fetch_fn, out_dir)
                 print("✔ TXT: đã lưu tách chương trong thư mục output.")
 
-        # EPUB
-        if do_epub:
-            if not fetch_fn:
-                print("Bỏ qua EPUB: module không cung cấp fetch_fn.")
-            else:
-                try:
-                    from epub_builder import create_epub
-                    cover_bytes=None; cover_ext=".jpg"
-                    if hasattr(module, "_fetch_cover_from_book_page") and hasattr(module, "_clean_to_list_url"):
-                        try:
-                            cb, ce, _ = module._fetch_cover_from_book_page(module._clean_to_list_url(url))
-                            if cb: cover_bytes, cover_ext = cb, (ce or ".jpg")
-                        except Exception:
-                            pass
-                    print("\nĐang tạo EPUB…")
-                    create_epub(url, title, author, chapters, fetch_fn,
-                                cover_bytes=cover_bytes, cover_ext=cover_ext, language="vi")
-                    print(f"✔ EPUB: {title}.epub")
-                except Exception as e:
-                    print(f"⚠ EPUB lỗi: {e}")
+        # --- TẠO EPUB ---
+        from epub_builder import create_epub
+
+        # Hỏi đường dẫn ảnh bìa (tùy chọn)
+        user_cover = input("\nNhập đường dẫn ảnh cover (bỏ trống để tự lấy từ trang): ").strip()
+
+        # Chọn chế độ EPUB
+        print("\nChọn chuẩn EPUB:")
+        print("1) EPUB2 (Kobo-friendly, mặc định)")
+        print("2) EPUB3 (near-kepub: nav.xhtml + titlepage.xhtml)")
+        mode = input("Nhập 1 hoặc 2: ").strip()
+        epub_version = 2 if mode != "2" else 3
+
+        # Nếu không có cover người dùng -> thử lấy từ site (nếu module có)
+        cover_bytes, cover_ext = None, ".jpg"
+        if not user_cover and hasattr(module, "_fetch_cover_from_book_page") and hasattr(module, "_clean_to_list_url"):
+            try:
+                cb, ce, _ = module._fetch_cover_from_book_page(module._clean_to_list_url(url))
+                if cb:
+                    cover_bytes, cover_ext = cb, (ce or ".jpg")
+            except Exception:
+                pass
+
+        print("\nĐang tạo EPUB…")
+        out_dir = os.path.join("output", slugify_vi(title))  # hoặc thư mục bạn đang dùng
+        epub_path = create_epub(
+            book_url=url,
+            book_title=title,
+            author=author,
+            chapters=chapters,
+            fetch_fn=module.fetch_chapter_content,   # hoặc module.fetch_chapter_content
+            out_dir=out_dir,
+            cover_path=user_cover or None,
+            cover_bytes=cover_bytes,
+            cover_ext=cover_ext,
+            epub_version=epub_version,
+            language="vi",
+            creator="Hishiro",
+        )
+        print(f"✔ EPUB: {epub_path}")
+
 
         print("\nHoàn tất.")
     except KeyboardInterrupt:
