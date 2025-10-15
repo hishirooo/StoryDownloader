@@ -2,13 +2,15 @@
 """
 epub_builder: Module chung để đóng gói EPUB2 đơn giản.
 - create_epub(book_url, book_title, author, chapters, fetch_fn, *,
-              cover_bytes=None, cover_ext='.jpg', language='vi', creator='Hishiro')
-  trong đó:
-    - chapters: list[{'title','url'}]
-    - fetch_fn(url) -> {'title','content_html','url'}  (site module cung cấp)
+              cover_bytes=None, cover_ext='.jpg', language='vi', creator='Hishiro',
+              sleep=0.12, out_epub_path=None)
+
+Trong đó:
+  - chapters: list[{'title','url'}]
+  - fetch_fn(url) -> {'title','content_html','url'}  (site module cung cấp)
 """
 from datetime import datetime, timezone
-import zipfile, html, time, re
+import zipfile, html, time, re, os
 from typing import Callable, List, Dict, Optional
 
 def _epub_write(zipf, arcname, data_bytes, compress=True):
@@ -22,9 +24,16 @@ def _normalize_title(t: Optional[str]) -> str:
     m = re.match(r"^(Chương)\s*(\d+)(\s*[:\-–]?\s*)(.*)$", t, flags=re.I)
     if m:
         name, num, _, rest = m.groups()
-        rest = rest.strip()
+        rest = (rest or "").strip()
         return f"{name} {num}: {rest}" if rest else f"{name} {num}"
     return t
+
+def _safe_fs_name(name: str, maxlen: int = 150) -> str:
+    """Làm sạch tên file cho Windows/macOS/Linux (loại ký tự cấm)."""
+    s = name or "book"
+    s = re.sub(r'[\\/:*?"<>|]+', ' - ', s)   # ký tự cấm Windows
+    s = re.sub(r"\s+", " ", s).strip().rstrip(".")
+    return (s[:maxlen] or "book")
 
 def create_epub(book_url: str,
                 book_title: str,
@@ -36,7 +45,8 @@ def create_epub(book_url: str,
                 cover_ext: str=".jpg",
                 language: str="vi",
                 creator: str="Hishiro",
-                sleep: float=0.12):
+                sleep: float=0.12,
+                out_epub_path: Optional[str]=None):
     book_title = book_title or "Truyện"
     author = author or "—"
 
@@ -50,9 +60,18 @@ def create_epub(book_url: str,
         items.append(c)
         time.sleep(sleep)
 
-    cover_name = "Images/cover"+(cover_ext or ".jpg") if cover_bytes else None
+    cover_name = None
+    if cover_bytes:
+        # Đảm bảo phần mở rộng hợp lệ
+        ext = (cover_ext or ".jpg").lower()
+        if ext not in (".jpg", ".jpeg", ".png"):
+            ext = ".jpg"
+        cover_name = "Images/cover" + ext
 
-    with zipfile.ZipFile(book_title + ".epub", "w") as z:
+    # Đường dẫn EPUB đầu ra
+    out_path = out_epub_path or (_safe_fs_name(book_title) + ".epub")
+
+    with zipfile.ZipFile(out_path, "w") as z:
         # 1) mimetype
         _epub_write(z, "mimetype", b"application/epub+zip", compress=False)
 
@@ -88,7 +107,7 @@ def create_epub(book_url: str,
                 ' "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">\n'
                 '<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n'
                 '<meta http-equiv="Content-Type" content="application/xhtml+xml; charset=utf-8"/>\n'
-                '<link rel="stylesheet" type="text/css" href="../Styles/style.css"/>\n'
+                '<link rel="stylesheet" type="text/css" href="./Styles/style.css"/>\n'
                 f"<title>{html.escape(c['title'])}</title>\n</head>\n<body>\n"
                 f"<h1>{html.escape(c['title'])}</h1>\n"
                 f"{c.get('content_html') or '<p>(Không có nội dung)</p>'}\n"
@@ -97,14 +116,18 @@ def create_epub(book_url: str,
             _epub_write(z, "OEBPS/" + fn, xhtml)
             manifest_items.append(f'<item id="chap{i}" href="{fn}" media-type="application/xhtml+xml"/>')
             spine_items.append(f'<itemref idref="chap{i}"/>')
-            navpoints.append(f'<navPoint id="nav{i}" playOrder="{i}"><navLabel><text>{html.escape(c["title"])}</text></navLabel><content src="{fn}"/></navPoint>')
+            navpoints.append(
+                f'<navPoint id="nav{i}" playOrder="{i}">'
+                f'<navLabel><text>{html.escape(c["title"])}</text></navLabel>'
+                f'<content src="{fn}"/></navPoint>'
+            )
 
         # 5) Cover (nếu có)
         manifest_cover = ""
         meta_cover = ""
-        if cover_bytes:
-            _epub_write(z, "OEBPS/"+cover_name, cover_bytes)
-            ctype = "image/png" if cover_ext.lower().endswith(".png") else "image/jpeg"
+        if cover_bytes and cover_name:
+            _epub_write(z, "OEBPS/" + cover_name, cover_bytes)
+            ctype = "image/png" if cover_name.lower().endswith(".png") else "image/jpeg"
             manifest_cover = f'<item id="cover" href="{cover_name}" media-type="{ctype}" properties="cover-image"/>'
             meta_cover = '<meta name="cover" content="cover"/>'
 

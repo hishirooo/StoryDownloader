@@ -7,6 +7,7 @@ CLI downloader:
 """
 import importlib, re, sys, os, io, glob
 from urllib.parse import urlparse
+from typing import Optional
 
 # ---- Fix UTF-8 cho Windows console ----
 if os.name == "nt":
@@ -69,7 +70,7 @@ def _auto_fetch_cover(module, book_page_url: str):
     return None, None
 
 # ---------------- HTML/TXT reuse helpers ----------------
-def _find_html_for_index(out_dir: str, idx: int, total: int) -> str | None:
+def _find_html_for_index(out_dir: str, idx: int, total: int) -> Optional[str]:
     """
     Tìm file HTML đã lưu ứng với chỉ số chương:
     - Hỗ trợ 0001.html (tangthuvien_net) và "0001 - title.html" (truyenfull_vision).
@@ -247,16 +248,11 @@ def main():
             print(f"\nĐang tạo EPUB bằng epub_builder: {epub_path}")
             epub_builder.create_epub(
                 url, title, author, chapters,
-                fetch_from_cache_or_net,   # <-- dùng lại HTML
+                fetch_from_cache_or_net,               # dùng lại HTML
                 cover_bytes=cover_bytes, cover_ext=(cover_ext or ".jpg"),
-                language="vi", creator="Hishiro"
+                language="vi", creator="Hishiro",
+                out_epub_path=epub_path               # ghi thẳng ra out_dir (tên an toàn)
             )
-            # Di chuyển file {title}.epub (nếu epub_builder ghi ở CWD) vào out_dir
-            if os.path.exists(title + ".epub"):
-                try:
-                    os.replace(title + ".epub", epub_path)
-                except Exception:
-                    import shutil; shutil.move(title + ".epub", epub_path)
             print(f"✔ EPUB đã tạo: {epub_path}")
 
     except KeyboardInterrupt:
