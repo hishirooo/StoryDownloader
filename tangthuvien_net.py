@@ -450,6 +450,24 @@ def get_chapter(url: str) -> Dict:
         "text": text,
     }
 
+# --- COVER: tải ảnh bìa từ trang sách (TangThuVien) ---
+def _fetch_cover_from_book_page(book_page_url: str):
+    soup = _fetch_html(book_page_url)
+    img = (soup.select_one(".book-information .book-img img")
+           or soup.select_one(".book-img img")
+           or soup.select_one("img[itemprop='image']")
+           or soup.select_one("img#bookImg"))
+    if img and img.get("src"):
+        src = urljoin(book_page_url, img["src"])
+        r = requests.get(src, headers=HEADERS, timeout=TIMEOUT)
+        r.raise_for_status()
+        content = r.content
+        ct = r.headers.get("Content-Type","").lower()
+        ext = ".png" if ("png" in ct or src.lower().endswith(".png")) else ".jpg"
+        return content, ext, src
+    return None, None, None
+
+
 # =============== API CHÍNH ===============
 def getText(url: str) -> Dict:
     soup = _fetch_html(url)
@@ -568,3 +586,7 @@ ol{{padding-left:1.25rem}}
     with open(os.path.join(out_dir, "index.html"), "w", encoding="utf-8") as f:
         f.write(index_html)
     print(f"📖 Index: index.html")
+
+def fetch_chapter_content(url: str) -> dict:
+    """Alias cho get_chapter để dùng với epub_builder."""
+    return get_chapter(url)
