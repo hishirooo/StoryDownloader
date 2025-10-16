@@ -149,7 +149,7 @@ def _save_txt_per_chapter(module, book_title: str, chapters: list, out_dir: str,
             print(f"[{i:04d}/{total}] ERROR TXT: {info.get('url')} — {e}")
 
 def main():
-    import epub_builder  # create_epub(book_url, book_title, author, chapters, fetch_fn, ...)
+    import epub_builder
     try:
         # 1) Nhập URL
         url = input("Nhập URL: ").strip()
@@ -166,6 +166,7 @@ def main():
             print(f"Module '{module_name}' không có hàm getText(url)."); return
 
         # 3) Lấy meta + danh sách chương
+        print("Đang lấy thông tin truyện...")
         data = module.getText(url)
         if not data:
             print("Plugin không trả về dữ liệu."); return
@@ -176,18 +177,20 @@ def main():
         title    = data.get("title") or "Truyện"
         author   = data.get("author") or "—"
         chapters = data.get("chapters", [])
-        print("====== THÔNG TIN TRUYỆN ======")
+        print("\n====== THÔNG TIN TRUYỆN ======")
         print(f"Tiêu đề : {title}")
         print(f"Tác giả : {author}")
         if data.get("total_chapters"):
-            print(f"Tổng số chương: {data['total_chapters']}")
+            print(f"Tổng số chương: {data['total_chapters']} (tìm thấy {len(chapters)})")
+        else:
+            print(f"Số chương tìm thấy: {len(chapters)}")
         if chapters:
             print("Ví dụ 3 chương đầu:")
             for i, c in enumerate(chapters[:3], 1):
-                print(f"  {i:02d}. {c.get('title')} -> {c.get('url')}")
+                print(f"  {i:02d}. {c.get('title')}")
 
         # 4) Hỏi đường dẫn cover
-        cover_path = input("Nhập đường dẫn ảnh Cover (bỏ trống để tự lấy): ").strip()
+        cover_path = input("\nNhập đường dẫn ảnh Cover (bỏ trống để tự lấy): ").strip()
         cover_bytes, cover_ext = _read_cover_from_path(cover_path)
         if not cover_bytes:
             cover_bytes, cover_ext = _auto_fetch_cover(module, url)
@@ -198,17 +201,16 @@ def main():
         print("[2]: Tải và lưu dạng TXT")
         print("[3]: Tải và lưu dạng HTML + TXT")
         print("[4]: Tải và lưu dạng HTML + Build Epub")
-        print("[5]: Tải và lưu dạng TXT + Build Epub")
+        print("[5]: Tải và lưu dạng TXT + Build Epub (sẽ tải mới)")
         print("[6]: Tải và lưu dạng HTML + TXT + Build Epub")
         choice = input("Nhập lựa chọn (1-6): ").strip()
 
         out_dir = os.path.join("output", slugify_vi(title))
         os.makedirs(out_dir, exist_ok=True)
 
-        # fetch_fn thống nhất
         fetch_fn = getattr(module, "fetch_chapter_content", None) or getattr(module, "get_chapter", None)
         if fetch_fn is None:
-            raise AttributeError(f"Module '{module_name}' thiếu fetch_chapter_content/get_chapter")
+            raise AttributeError(f"Module '{module_name}' thiếu hàm fetch_chapter_content/get_chapter")
 
         do_html = choice in ("1", "3", "4", "6")
         do_txt  = choice in ("2", "3", "5", "6")
@@ -218,47 +220,45 @@ def main():
         if do_html and hasattr(module, "save_all_chapters_to_html"):
             print(f"\nBắt đầu lưu HTML vào: {out_dir}")
             module.save_all_chapters_to_html(title, chapters, out_dir, start=1, end=None)
-            print(f"✔ Đã lưu HTML. Thư mục: {out_dir}")
+            print(f"✔ Đã lưu xong HTML. Thư mục: {out_dir}")
 
         # 7) TXT (tận dụng HTML nếu có)
         if do_txt:
-            print(f"\nBắt đầu lưu TXT vào: {out_dir}\\txt")
+            print(f"\nBắt đầu lưu TXT vào: {os.path.join(out_dir, 'txt')}")
+            # Tái sử dụng HTML nếu `do_html` đã chạy trước đó.
             _save_txt_per_chapter(module, title, chapters, out_dir, fetch_fn, reuse_html=do_html)
+            print(f"✔ Đã lưu xong TXT.")
 
-        # 8) EPUB — Dùng lại HTML nếu có
+        # 8) EPUB — Tận dụng cache HTML nếu có một cách thông minh
         if do_epub and chapters:
-            # Map nhanh để tìm file theo URL
-            url2meta = { info["url"]: (i, info.get("title")) for i, info in enumerate(chapters, 1) }
-
-            def fetch_from_cache_or_net(page_url: str) -> dict:
-                """Wrapper: ưu tiên đọc từ HTML, chỉ gọi mạng nếu thiếu."""
-                if do_html and page_url in url2meta:
-                    idx, ttl = url2meta[page_url]
-                    html_path = _find_html_for_index(out_dir, idx, len(chapters))
-                    if html_path and os.path.exists(html_path):
-                        content_html = _extract_content_html_from_saved(html_path)
-                        title_local  = ttl or f"Chương {idx}"
-                        return {"title": title_local, "url": page_url, "content_html": content_html}
-                # fallback: gọi plugin
-                return fetch_fn(page_url)
-
-            import epub_builder
-            epub_name = f"{slugify_vi(title)}_epub_builder.epub"
+            print(f"\nBắt đầu tạo EPUB bằng epub_builder...")
+            
+            epub_name = f"{slugify_vi(title)}.epub"
             epub_path = os.path.join(out_dir, epub_name)
-            print(f"\nĐang tạo EPUB bằng epub_builder: {epub_path}")
+
+            # Đây là phần quan trọng:
+            # - `fetch_fn` để tải nếu không có cache.
+            # - `html_cache_dir` chỉ được truyền vào nếu người dùng đã chọn lưu HTML.
             epub_builder.create_epub(
-                url, title, author, chapters,
-                fetch_from_cache_or_net,               # dùng lại HTML
-                cover_bytes=cover_bytes, cover_ext=(cover_ext or ".jpg"),
-                language="vi", creator="Hishiro",
-                out_epub_path=epub_path               # ghi thẳng ra out_dir (tên an toàn)
+                book_url=url,
+                book_title=title,
+                author=author,
+                chapters=chapters,
+                fetch_fn=fetch_fn,
+                html_cache_dir=out_dir if do_html else None, # << FIX QUAN TRỌNG
+                cover_bytes=cover_bytes,
+                cover_ext=cover_ext,
+                out_epub_path=epub_path
             )
             print(f"✔ EPUB đã tạo: {epub_path}")
 
     except KeyboardInterrupt:
         print("\nĐã hủy.")
     except Exception as e:
-        print(f"Lỗi: {e}")
-
+        import traceback
+        print(f"\nLỖI CHƯƠNG TRÌNH: {e}")
+        traceback.print_exc()
+        
+        
 if __name__ == "__main__":
     main()
