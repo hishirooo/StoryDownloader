@@ -403,62 +403,94 @@ def _clean_text_basic(s: str) -> str:
     if not s:
         return ""
     s = s.replace("\u200b"," ").replace("\ufeff"," ").replace("\xa0"," ").replace("\u3000"," ")
-    # '. . .' hoặc '......' -> '…'
-    s = re.sub(r"(?:\.\s*){3,}", "…", s)
-    s = re.sub(r"[\.]{4,}", "…", s)
-    s = re.sub(r"…{2,}", "…", s)
-    # gọn ngoặc 《 》 và giữ dấu bám với 》
-    s = re.sub(r"\s*([《》])\s*", r"\1", s)
-    s = re.sub(r"》\s*([\.!\?;…])", r"》\1", s)
-    # gọn khoảng trắng
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
+    s = re.sub(r"(?:\.\s*){3,}", "…", s)     # ". . ." / ".  .  ." -> "…"
+    s = re.sub(r"[\.]{4,}", "…", s)          # "......" -> "…"
+    s = re.sub(r"…{2,}", "…", s)             # "……" -> "…"
+    s = re.sub(r"\s*([《》])\s*", r"\1", s)   # gọn ngoặc 《 》
+    s = re.sub(r"》\s*([\.!\?;…])", r"》\1", s)  # dính dấu vào 》
+    return re.sub(r"\s+", " ", s).strip()
+
+def _split_box_to_paragraphs(box: BeautifulSoup) -> list[str]:
+    """
+    Từ <div class="box-chap ..."> -> list paragraph:
+    - Giữ newline thật trong box (get_text với separator="\n")
+    - Tách theo dòng trống; nếu không có, tách theo từng dòng
+    - Không tạo đoạn chỉ gồm dấu câu: ghép vào đoạn trước
+    """
+    # Nếu trong box đã có <p>, ưu tiên lấy từng p
+    ps = box.find_all("p")
+    if ps:
+        out = []
+        for p in ps:
+            t = _clean_text_basic(p.get_text(" ", strip=True))
+            if t:
+                out.append(t)
+        if out:
+            return out
+
+    # Giữ nguyên newline trong box
+    raw = box.get_text("\n", strip=True)
+    raw = raw.replace("\r\n", "\n")
+    # Gom khoảng trắng quanh newline
+    raw = re.sub(r"[ \t]*\n[ \t]*", "\n", raw)
+
+    # 1) Tách theo dòng trống (2+ newline)
+    parts = [p.strip() for p in re.split(r"\n{2,}", raw) if p.strip()]
+
+    # 2) Nếu vẫn chỉ có 1 khối dài -> tách theo từng dòng
+    if len(parts) <= 1:
+        parts = [ln.strip() for ln in raw.split("\n") if ln.strip()]
+
+    # 3) Làm sạch + ghép các dòng chỉ có dấu vào đoạn trước
+    paras, buf = [], []
+    for p in parts:
+        t = _clean_text_basic(p)
+        if not t:
+            continue
+        # nếu chỉ toàn dấu câu thì ghép vào đoạn trước
+        if re.fullmatch(r'[\.!\?;…，,、:：”"\'》）\)\]]+', t):
+            if paras:
+                paras[-1] = (paras[-1] + t).strip()
+            else:
+                buf.append(t)
+            continue
+        paras.append(t)
+
+    # Trường hợp hiếm còn dư trong buf
+    if buf:
+        if paras:
+            paras[-1] = (paras[-1] + " " + " ".join(buf)).strip()
+        else:
+            paras = [" ".join(buf)]
+
+    return paras
 
 def extract_chapter_content(chapter_url: str) -> dict:
     """
-    Cách làm mới (đi theo box):
-    - Mỗi <div class="box-chap ..."> => 1 <p> (hoặc ghép vào trước nếu chỉ có dấu).
-    - Bỏ qua box-adv.
-    - Không cố tách câu; kết quả xuống dòng đẹp như trên web.
+    Lấy nội dung từ tất cả <div class="box-chap"> (kể cả hidden), giữ newline,
+    tách theo dòng/box -> <p>. Bỏ qua box-adv.
     """
     soup = _fetch_html(chapter_url)
 
-    # lấy các box-chap theo đúng thứ tự DOM
+    # Lấy các box-chap theo thứ tự DOM, bỏ quảng cáo
     boxes = soup.select("div.box-chap:not([class*='box-adv'])")
     boxes = [b for b in boxes if b.get_text(strip=True)]
 
     paragraphs: List[str] = []
     for b in boxes:
-        t = _clean_text_basic(b.get_text(" ", strip=True))
-        if not t:
-            continue
+        paragraphs.extend(_split_box_to_paragraphs(b))
 
-        # Nếu box chỉ toàn dấu câu / đóng ngoặc -> ghép vào đoạn trước
-        if re.fullmatch(r'[\.!\?;…，,、:：”"\'》）\)\]]+', t) and paragraphs:
-            paragraphs[-1] = (paragraphs[-1] + t).strip()
-            continue
-
-        paragraphs.append(t)
-
-    # Fallback hiếm: không có box-chap nào -> lấy toàn trang rồi cố tách sơ bộ
+    # Fallback hiếm khi không có box-chap
     if not paragraphs:
-        raw = _clean_text_basic(
-            (soup.select_one("#chapter-c-content, .chapter-c-content, #chapter-content, .chapter-content") or soup
-            ).get_text(" ", strip=True)
-        )
-        # tách đoạn rất nhẹ bằng khoảng trắng gấp đôi / xuống dòng
-        for para in re.split(r"\n{2,}|\s{3,}", raw):
-            para = _clean_text_basic(para)
-            if para:
-                paragraphs.append(para)
+        cont = soup.select_one("#chapter-c-content, .chapter-c-content, #chapter-content, .chapter-content") or soup
+        paragraphs = _split_box_to_paragraphs(cont)
 
-    # Xuất HTML: mỗi đoạn 1 <p>
-    content_html = "".join(f"<p>{html.escape(p)}</p>" for p in paragraphs) \
-                   if paragraphs else "<p>(Không tìm thấy nội dung chương)</p>"
+    content_html = "".join(f"<p>{html.escape(p)}</p>" for p in paragraphs) if paragraphs \
+                   else "<p>(Không tìm thấy nội dung chương)</p>"
 
-    # Tiêu đề chương tối giản (giữ như cũ)
     title = _get_chapter_title_basic(soup)
     return {"title": title, "content_html": content_html}
+
 # ====================== LƯU FILE (HTML/TXT) ======================
 
 def make_book_dir(book_title: str) -> str:
