@@ -1,42 +1,47 @@
 # -*- coding: utf-8 -*-
 """
-tangthuvien_net.py — Trình tải chương & tạo EPUB (TTV)
+tangthuvien_net.py — Trình tải chương & tạo EPUB cho tangthuvien
 
-CHỨC NĂNG CHÍNH
+CHẾ ĐỘ:
 1) Tải HTML
 2) Tải TXT
 3) Tải HTML + Tạo EPUB (đọc lại HTML đã tải)
-4) Tải TXT  + Tạo EPUB (từ TXT -> bọc HTML đơn giản -> EPUB)
+4) Tải TXT  + Tạo EPUB (TXT -> bọc XHTML tối giản -> EPUB)
 5) Tải HTML + TXT + Tạo EPUB (EPUB dùng HTML đã tải)
 
-COVER
-- Sau khi nhập URL, nhập thêm đường dẫn Cover (local path hoặc URL ảnh).
-- Nếu bỏ trống: tự lấy ảnh bìa từ trang theo DOM:
-    <div class="book-img"><a id="bookImg"><img src="..."></a></div>
-- Nếu ảnh không thuộc định dạng EPUB-friendly (jpeg/png), sẽ **convert 1 lần** sang JPEG (cần Pillow).
+COVER:
+- Sau khi nhập URL, bạn nhập đường dẫn cover (file local hoặc URL ảnh).
+- Bỏ trống sẽ tự lấy cover từ DOM: div.book-img img[src]
+- Nếu ảnh không phải JPG/PNG → convert 1 lần sang JPEG (cần Pillow).
 
-GHI LOG
-- Thư mục đầu ra: .\Output\<Tên Truyện>  (không dấu hoặc có dấu tuỳ cấu hình)
-- EPUB sẽ lưu ở: .\Output\<TênTruyen>.epub (theo yêu cầu)
-- Mỗi bước đều in log và lưu vào file: Output/<Tên Truyện>/log.txt
-  * Khi tải:   Saved : 0001.xhtml - <Tiêu đề chương>
-  * Khi tạo:   Readfile : 0001.xhtml from Output/<Tên Truyện>
+LOG:
+- Thư mục đầu ra: ./Output/<Tên Truyện> (không dấu hoặc có dấu tùy cấu hình)
+- EPUB sẽ lưu ở: ./Output/<TenTruyen>.epub (không nằm trong thư mục truyện)
+- Khi tải:   Saved : 0001.xhtml - <Tiêu đề chương>
+- Khi tạo:   Readfile : 0001.xhtml from Output/<Tên Truyện>
+
+LƯU Ý: Phần lấy nội dung chương đã reset theo yêu cầu:
+- CHỈ chọn và ghép các <div class="box-chap ..."> (kể cả hidden).
+- Chưa xoá rác, chưa tách đoạn; giữ nguyên HTML thô để bạn kiểm tra.
 """
-from __future__ import annotations
+
 from typing import Optional, List, Dict, Tuple
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urlunparse, urljoin
-import requests, ssl, urllib3, re, json, html, os, unicodedata, zipfile, io, datetime, shutil, mimetypes
+import requests, ssl, urllib3, re, json, html, os, unicodedata, zipfile, io, datetime, shutil
 
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 
 # ====================== CẤU HÌNH ======================
 
-BASE = "https://truyen.tangthuvien.vn"     # Mirror ổn định
+BASE = "https://truyen.tangthuvien.vn"     # mirror ổn định
 OUTPUT_ROOT = os.path.join(os.getcwd(), "Output")
-USE_NO_DIACRITICS_FOLDER = True            # True: thư mục không dấu; False: giữ nguyên dấu
-SAVE_AS_XHTML = True                       # Lưu HTML dưới dạng .xhtml
+USE_NO_DIACRITICS_FOLDER = True            # True: tên thư mục không dấu; False: giữ dấu
+SAVE_AS_XHTML = True                       # Lưu trang chương là .xhtml
+
+# ---- EPUB target (mặc định EPUB 2 an toàn cho Kobo) ----
+EPUB_TARGET = "epub2"   # "epub2" | "epub3"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
@@ -48,7 +53,7 @@ HEADERS = {
 # ====================== SESSION + TLS ======================
 
 class TLSAdapter(HTTPAdapter):
-    """Adapter ép TLS >= 1.2 và thêm retry hợp lý."""
+    """Adapter ép TLS >= 1.2 và retry hợp lý."""
     def __init__(self, **kwargs):
         self._ctx = ssl.create_default_context()
         try:
@@ -62,6 +67,7 @@ class TLSAdapter(HTTPAdapter):
             raise_on_status=False,
         )
         super().__init__(max_retries=retries, **kwargs)
+
     def init_poolmanager(self, *args, **kwargs):
         kwargs["ssl_context"] = self._ctx
         return super().init_poolmanager(*args, **kwargs)
@@ -74,7 +80,7 @@ _session.mount("http://", HTTPAdapter(max_retries=Retry(total=3, backoff_factor=
 # ====================== TIỆN ÍCH ======================
 
 def _canonicalize_domain(url: str) -> str:
-    """Chuyển *.tangthuvien.net -> truyen.tangthuvien.vn (ổn định hơn)."""
+    """Chuyển *.tangthuvien.net -> truyen.tangthuvien.vn (tránh lỗi TLS)."""
     u = urlparse(url)
     host = (u.netloc or "").lower()
     if host.endswith("tangthuvien.net"):
@@ -83,7 +89,7 @@ def _canonicalize_domain(url: str) -> str:
     return url
 
 def _fetch_html(url: str) -> BeautifulSoup:
-    """Tải HTML (có chuyển domain + fallback verify=False khi gặp SSLError)."""
+    """Tải HTML (có chuyển domain + fallback verify=False khi SSLError)."""
     url = _canonicalize_domain(url)
     try:
         r = _session.get(url, timeout=30)
@@ -96,7 +102,7 @@ def _fetch_html(url: str) -> BeautifulSoup:
         r.encoding = r.apparent_encoding
     return BeautifulSoup(r.text, "html.parser")
 
-def _download_bytes(url: str) -> Tuple[bytes, Optional[str]]:
+def _download_bytes(url: str):
     """Tải bytes (ví dụ ảnh cover)."""
     url = _canonicalize_domain(url)
     try:
@@ -115,10 +121,9 @@ def _text(el) -> str:
         return ""
 
 def slugify_filename(name: str, allow_unicode: bool = False) -> str:
-    """Chuẩn hoá tên tệp/thư mục hợp lệ Windows + bỏ dấu gạch '-' theo yêu cầu."""
+    """Chuẩn hoá tên thư mục/tệp hợp lệ, bỏ gạch '-' theo yêu cầu."""
     name = (name or "").strip().replace("—","-").replace("–","-")
-    # BỎ gạch ngang trong tên
-    name = name.replace("-", "").strip()
+    name = name.replace("-", "").strip()  # bỏ gạch ngang
     if allow_unicode:
         name = unicodedata.normalize("NFKC", name)
     else:
@@ -150,7 +155,7 @@ class Logger:
 # ====================== THÔNG TIN TRUYỆN & COVER ======================
 
 def _get_book_info(soup: BeautifulSoup) -> Dict[str, str]:
-    """Lấy title/author/genre/status theo layout quen thuộc của TTV (có fallback)."""
+    """Lấy title/author/genre/status theo layout TTV (có fallback)."""
     info = {"title": "", "author": "", "genre": "", "status": ""}
     try:
         book_info = soup.find('div', class_='book-info')
@@ -178,7 +183,7 @@ def _get_book_info(soup: BeautifulSoup) -> Dict[str, str]:
     return info
 
 def _get_book_id_from_meta(soup: BeautifulSoup) -> Optional[str]:
-    """Đọc <meta name="book_detail" content="..."> để lấy story_id (hỗ trợ content là số/JSON)."""
+    """Đọc <meta name="book_detail" ...> để lấy story_id (hỗ trợ số/JSON)."""
     meta = soup.find('meta', attrs={'name': 'book_detail'})
     if not meta: return None
     content = (meta.get('content') or '').strip()
@@ -225,13 +230,13 @@ def _get_list_chapters(StoryUrl: str) -> List[Dict[str, str]]:
     for a in s.find_all("a"):
         title = (a.get("title") or a.get_text(strip=True) or "").strip()
         href  = (a.get("href") or "").strip()
-        if not title or not href: 
+        if not title or not href:
             continue
         chapters.append({"title": title, "link": urljoin(BASE + "/", href)})
     return chapters
 
 def getinfo(StoryUrl: str) -> dict:
-    """In thông tin truyện + trả dict nếu muốn dùng tiếp."""
+    """In thông tin truyện + trả dict."""
     soup = _fetch_html(StoryUrl)
     info = _get_book_info(soup)
     story_id = _get_book_id_from_meta(soup)
@@ -245,123 +250,215 @@ def getinfo(StoryUrl: str) -> dict:
     print(f"Saved {len(chapters)} link chapter from API.")
     return {"info": info, "story_id": story_id, "chapters": chapters}
 
-# ====================== TRÍCH & LÀM SẠCH NỘI DUNG CHƯƠNG ======================
+# ====================== NỘI DUNG CHƯƠNG (LÀM SẠCH & TÁCH ĐOẠN TỪ BOX-CHAP) ======================
 
-_UNWANTED_SELECTORS = [
-    "script","style","noscript","iframe","ins",
-    ".left-control","ul.left-control",".right-control",".top-control",
-    ".panel-box",".panel-catalog",".chapter-control",".chapter-controls",
-    "#chapter-tool","#chapter-toolbar",".chapter-toolbar",
-    ".chapter-actions",".chapter-nav",".chapter-buttons",
-    ".social",".share",".zalo",".fb",".twitter",".tiktok",
-    ".ads",".ad","[class*='ads']","[id*='ads']",".banner",
-    ".donate",".donation",".donate-box",".vote",".rating",".coin",".voucher",
-    ".breadcrumb",".toolbox",".copyright",
-    ".hidden",".clearfix",".icon-control",".fa",".glyphicon",
-    "header","footer","form","button","svg",
-    ".more-chap","a.more-chap","[onclick*='openNextChap']",
-    "[class^='box-adv']","[class*=' box-adv']",
-]
-_JUNK_PATTERNS = [
-    r"\btặng\s+phiếu\b", r"\bdonate\b", r"\bủng hộ\b", r"\bnhấn\b", r"\bbấm\b",
-    r"\bđọc\s+(tiếp|full)\b", r"https?://", r"\btangthuvien\b", r"\bquảng\s*cáo\b",
-    r"\blike\b", r"\bshare\b", r"\btheo dõi\b", r"\bzalo\b", r"\bapp\b",
-    r"\bđăng nhập\b", r"\bđăng ký\b", r"\bcomment\b", r"\bbình luận\b",
-]
-_JUNK_RE = re.compile("|".join(_JUNK_PATTERNS), flags=re.I)
-_CONTENT_SELECTORS = [
-    "#chapter-content",".chapter-content",".chapter-c-content",
-    ".box-chap",".reading-content",".read-content","article",
-]
 _TITLE_SELECTORS = [
     "h1.chapter-title","h2.chapter-title","div.chapter h2",".chapter h2",
     ".chapter .title","h1.title","h2.title","h1","h2",
     ".chapter-name",".chap-name",".entry-title",".book-chapter h1",".book-chapter h2",
 ]
 
-def _select_chapter_container(soup: BeautifulSoup) -> BeautifulSoup:
-    for sel in _CONTENT_SELECTORS:
-        node = soup.select_one(sel)
-        if node: return node
-    return soup
+# Một số câu “rác” hay xuất hiện
+_JUNK_PATTERNS = [
+    r"(?i)\btặng phiếu\b",
+    r"(?i)b\s*ả\s*n tác phẩm.*sửa sang.*truyền lên",   # dòng chú thích
+    r"(?i)\bbản quyền\b|\bđăng tại\b|\bnguồn\b",       # banner/credit
+    r"^-{2,}$",                                        # gạch phân cách
+]
 
-def _dom_cleanup(container: BeautifulSoup) -> BeautifulSoup:
-    cleaned = BeautifulSoup(str(container), "html.parser")
-    for css in _UNWANTED_SELECTORS:
-        for el in cleaned.select(css):
-            el.decompose()
-    return cleaned
-
-def _is_junk_line(text: str) -> bool:
-    if not text or not text.strip(): return True
-    if _JUNK_RE.search(text): return True
-    if len(text.strip()) < 3: return True
+def _is_junk_line(s: str) -> bool:
+    s = (s or "").strip()
+    if not s: 
+        return True
+    for p in _JUNK_PATTERNS:
+        if re.search(p, s):
+            return True
     return False
 
-def _extract_chapter_title(soup: BeautifulSoup, container: BeautifulSoup) -> str:
-    for h in container.select("h1, h2, h3"):
-        t = h.get_text(" ", strip=True)
-        if re.search(r"\bChương\b\s*\d+", t, flags=re.I): return t
+def _get_chapter_title_basic(soup: BeautifulSoup) -> str:
+    """Tiêu đề chương tối giản: ưu tiên h1/h2 rồi fallback og:title/title trang."""
     for sel in _TITLE_SELECTORS:
-        el = soup.select_one(sel) or container.select_one(sel)
+        el = soup.select_one(sel)
         if el:
             t = el.get_text(" ", strip=True)
-            if t: return t
+            if t:
+                return t
     og = soup.find("meta", attrs={"property":"og:title"}) or soup.find("meta", attrs={"name":"og:title"})
-    if og and og.get("content"): return og["content"].strip()
-    bc = soup.select(".breadcrumb li, nav.breadcrumb li, .breadcrumbs li")
-    if bc:
-        last = bc[-1].get_text(" ", strip=True)
-        if last: return last
-    if soup.title: return soup.title.get_text(" ", strip=True)
+    if og and og.get("content"):
+        return og["content"].strip()
+    if soup.title:
+        return soup.title.get_text(" ", strip=True)
     return ""
 
-def _collect_text_blocks(cleaned: BeautifulSoup) -> List[str]:
+def _split_sentences_vi(text: str) -> list[str]:
     """
-    Tách đoạn văn thân thiện hơn:
-    - Ưu tiên <p> thành từng đoạn
-    - Nếu không có <p>: dựa trên <br> và kết thúc block (</p>, </div>, </li>, </h*>)
-    - Loại rác theo regex _JUNK_RE
+    Tách câu cho TV/TV-Hoa:
+    - Dấu kết câu: . ! ? … ; và fullwidth Trung: 。 ！ ？ ；
+    - Cho phép có ngoặc kép đóng ” đứng sau.
+    - Trước khi tách: chuẩn hoá '...'/'. . .' -> '…', và gọn ngoặc 《 》.
     """
-    texts: List[str] = []
+    text = (text or "").replace("\u200b", " ").replace("\ufeff", " ").replace("\xa0", " ").replace("\u3000", " ")
+    text = _normalize_ellipsis_and_brackets(text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return []
+    parts = re.split(r'(?<=[\.\!\?\…;\u3002\uFF01\uFF1F\uFF1B])”?\s+', text)
+    # lọc rỗng
+    parts = [p.strip() for p in parts if p and p.strip()]
+    return parts
 
-    # 1) Nếu có <p>, lấy từng <p>
-    ps = cleaned.find_all("p")
-    for p in ps:
-        t = p.get_text(" ", strip=True)
-        if not _is_junk_line(t): texts.append(t)
+def _group_sentences(sents: list[str], max_len: int = 300) -> list[str]:
+    """Gộp nhiều câu thành 1 đoạn ~300 ký tự để đọc vừa mắt."""
+    paras, buf, acc = [], [], 0
+    for s in sents:
+        if not s or _is_junk_line(s):
+            continue
+        buf.append(s)
+        acc += len(s)
+        if acc >= max_len or s.endswith((".”","!”","?”",".","!","?","…")):
+            para = " ".join(buf).strip()
+            if para and not _is_junk_line(para):
+                paras.append(para)
+            buf, acc = [], 0
+    if buf:
+        para = " ".join(buf).strip()
+        if para and not _is_junk_line(para):
+            paras.append(para)
+    return paras
 
-    if not texts:
-        # 2) Không có <p>: dùng HTML + quy tắc xuống dòng/đóng block để chia đoạn
-        inner_html = cleaned.decode_contents()
-        inner_html = re.sub(r"(?i)<br\s*/?>", "\n", inner_html)  # <br> -> \n
-        inner_html = re.sub(r"(?i)</p>|</div>|</li>|</h\d>", "\n\n", inner_html)  # kết thúc block -> \n\n
-        inner_text = BeautifulSoup(inner_html, "html.parser").get_text("\n", strip=True)
+def _paras_from_box(box: BeautifulSoup) -> list[str]:
+    """
+    Rút đoạn từ 1 <div class="box-chap ...">:
+    - Nếu có <p> -> lấy từng p
+    - Nếu có <br> -> đổi <br> thành xuống dòng -> tách theo dòng trống
+    - Nếu chỉ còn text liền mạch -> tách theo câu rồi gộp ~300 ký tự
+    """
+    # 1) Ưu tiên <p>
+    ps = box.find_all("p")
+    if ps:
+        out = []
+        for p in ps:
+            t = p.get_text(" ", strip=True)
+            t = t.replace("\u200b", " ").replace("\ufeff", " ").replace("\xa0", " ").replace("\u3000", " ").strip()
+            if t and not _is_junk_line(t):
+                out.append(t)
+        if out:
+            return out
 
-        # 2+ dòng trống => ngắt đoạn
-        paras = re.split(r"\n{2,}", inner_text)
-        for para in paras:
-            ptxt = para.strip()
-            if not ptxt: continue
-            # Ghép các dòng đơn thành 1 đoạn
-            ptxt = re.sub(r"[ \t]*\n[ \t]*", " ", ptxt)
-            if not _is_junk_line(ptxt):
-                texts.append(ptxt)
+    # 2) Xử lý <br> / đóng thẻ thành newline
+    frag = str(box)
+    frag = re.sub(r"(?i)<br\s*/?>", "\n", frag)
+    frag = re.sub(r"(?i)</p>|</div>|</li>|</h\d>|</section>|</article>", "\n\n", frag)
+    txt = BeautifulSoup(frag, "html.parser").get_text("\n", strip=True)
+    txt = txt.replace("\u200b", " ").replace("\ufeff", " ").replace("\xa0", " ").replace("\u3000", " ").strip()
 
-    # Loại rác đầu/cuối
-    while texts and _is_junk_line(texts[0]): texts.pop(0)
-    while texts and _is_junk_line(texts[-1]): texts.pop()
-    return texts
+    if "\n" in txt:
+        # Tách theo dòng trống
+        out = []
+        for para in re.split(r"\n{2,}", txt):
+            para = re.sub(r"[ \t]*\n[ \t]*", " ", para.strip())
+            if para and not _is_junk_line(para):
+                out.append(para)
+        if out:
+            return out
+
+    # 3) Fallback: tách theo câu & gộp
+    sents = _split_sentences_vi(txt)
+
+    # Ghép dấu rời rạc ('.', '…', '》.', v.v.) vào câu trước thay vì tạo đoạn riêng
+    merged = []
+    for s in sents:
+        if not s:
+            continue
+        # câu chỉ toàn dấu (., !, ?, …, ngoặc, dấu trích dẫn) -> ghép vào trước
+        if re.fullmatch(r'[\.!\?;…“”"\'《》、，、:,：；\-\–\—]+', s):
+            if merged:
+                merged[-1] = (merged[-1] + s).strip()
+            else:
+                merged.append(s)  # trường hợp hiếm: không có gì trước
+            continue
+        merged.append(s)
+
+    return _group_sentences(merged, max_len=300)
+
+def _normalize_ellipsis_and_brackets(text: str) -> str:
+    """
+    - Chuẩn hoá dấu chấm lửng: '. . .' / '..' / '……' -> '…'
+    - Xoá khoảng trắng quanh 《 》, và giữ dấu câu dính với 》 (tránh tạo '》' hoặc '》.' thành 1 dòng riêng)
+    """
+    if not text:
+        return ""
+    # '. . .' (có/không có khoảng trắng) hoặc nhiều hơn -> '…'
+    text = re.sub(r"(?:\.\s*){3,}", "…", text)
+    # '......' hoặc '……' -> '…'
+    text = re.sub(r"[\.]{4,}", "…", text)
+    text = re.sub(r"…{2,}", "…", text)
+    # bỏ khoảng trắng quanh 《 》
+    text = re.sub(r"\s*([《》])\s*", r"\1", text)
+    # giữ dấu câu dính với 》
+    text = re.sub(r"》\s*([\.!\?;…])", r"》\1", text)
+    return text
+
+def _clean_text_basic(s: str) -> str:
+    if not s:
+        return ""
+    s = s.replace("\u200b"," ").replace("\ufeff"," ").replace("\xa0"," ").replace("\u3000"," ")
+    # '. . .' hoặc '......' -> '…'
+    s = re.sub(r"(?:\.\s*){3,}", "…", s)
+    s = re.sub(r"[\.]{4,}", "…", s)
+    s = re.sub(r"…{2,}", "…", s)
+    # gọn ngoặc 《 》 và giữ dấu bám với 》
+    s = re.sub(r"\s*([《》])\s*", r"\1", s)
+    s = re.sub(r"》\s*([\.!\?;…])", r"》\1", s)
+    # gọn khoảng trắng
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
 def extract_chapter_content(chapter_url: str) -> dict:
+    """
+    Cách làm mới (đi theo box):
+    - Mỗi <div class="box-chap ..."> => 1 <p> (hoặc ghép vào trước nếu chỉ có dấu).
+    - Bỏ qua box-adv.
+    - Không cố tách câu; kết quả xuống dòng đẹp như trên web.
+    """
     soup = _fetch_html(chapter_url)
-    container = _select_chapter_container(soup)
-    cleaned = _dom_cleanup(container)
-    title = _extract_chapter_title(soup, cleaned)
-    texts = _collect_text_blocks(cleaned)
-    content_html = "".join(f"<p>{html.escape(t)}</p>" for t in texts) if texts else "<p>(Không tìm thấy nội dung chương)</p>"
-    return {"title": title, "content_html": content_html}
 
+    # lấy các box-chap theo đúng thứ tự DOM
+    boxes = soup.select("div.box-chap:not([class*='box-adv'])")
+    boxes = [b for b in boxes if b.get_text(strip=True)]
+
+    paragraphs: List[str] = []
+    for b in boxes:
+        t = _clean_text_basic(b.get_text(" ", strip=True))
+        if not t:
+            continue
+
+        # Nếu box chỉ toàn dấu câu / đóng ngoặc -> ghép vào đoạn trước
+        if re.fullmatch(r'[\.!\?;…，,、:：”"\'》）\)\]]+', t) and paragraphs:
+            paragraphs[-1] = (paragraphs[-1] + t).strip()
+            continue
+
+        paragraphs.append(t)
+
+    # Fallback hiếm: không có box-chap nào -> lấy toàn trang rồi cố tách sơ bộ
+    if not paragraphs:
+        raw = _clean_text_basic(
+            (soup.select_one("#chapter-c-content, .chapter-c-content, #chapter-content, .chapter-content") or soup
+            ).get_text(" ", strip=True)
+        )
+        # tách đoạn rất nhẹ bằng khoảng trắng gấp đôi / xuống dòng
+        for para in re.split(r"\n{2,}|\s{3,}", raw):
+            para = _clean_text_basic(para)
+            if para:
+                paragraphs.append(para)
+
+    # Xuất HTML: mỗi đoạn 1 <p>
+    content_html = "".join(f"<p>{html.escape(p)}</p>" for p in paragraphs) \
+                   if paragraphs else "<p>(Không tìm thấy nội dung chương)</p>"
+
+    # Tiêu đề chương tối giản (giữ như cũ)
+    title = _get_chapter_title_basic(soup)
+    return {"title": title, "content_html": content_html}
 # ====================== LƯU FILE (HTML/TXT) ======================
 
 def make_book_dir(book_title: str) -> str:
@@ -372,7 +469,7 @@ def make_book_dir(book_title: str) -> str:
     return out_dir
 
 def xhtml_wrap(title: str, body_html: str) -> str:
-    """Khung XHTML tối giản (để dùng cho EPUB)."""
+    """Khung XHTML tối giản (phục vụ EPUB)."""
     return f"""<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" lang="vi">
@@ -408,20 +505,7 @@ def save_txt(out_dir: str, idx: int, width: int, chapter_title: str, content_htm
     logger.log(f"Saved : {fname} - {chapter_title}")
     return fpath
 
-# ====================== COVER: LẤY, CHUẨN HOÁ (CONVERT), NHÚNG EPUB ======================
-
-def _guess_mime_from_ext(path_or_url: str) -> Tuple[str, str]:
-    """Đoán (ext, mime) từ tên file. Mặc định .jpg nếu không rõ."""
-    ext = os.path.splitext(path_or_url)[1].lower()
-    if ext in [".jpg", ".jpeg"]:
-        return ".jpg", "image/jpeg"
-    if ext == ".png":
-        return ".png", "image/png"
-    if ext == ".gif":
-        return ".gif", "image/gif"
-    if ext == ".webp":
-        return ".webp", "image/webp"
-    return ".jpg", "image/jpeg"
+# ====================== COVER: LẤY, CHUẨN HOÁ, NHÚNG ======================
 
 def _standardize_ext_from_mime(mime: str) -> str:
     mime = (mime or "").split(";")[0].strip().lower()
@@ -429,19 +513,23 @@ def _standardize_ext_from_mime(mime: str) -> str:
     if mime == "image/jpeg": return ".jpg"
     if mime == "image/gif": return ".gif"
     if mime == "image/webp": return ".webp"
-    return ".jpg"
+    return ""
+
+def _guess_ext_from_url(u: str) -> str:
+    u = u.split("?")[0].split("#")[0].lower()
+    for ext in (".jpg",".jpeg",".png",".gif",".webp"):
+        if u.endswith(ext): return ext
+    return ""
 
 def convert_cover_to_epub_safe(in_path: str, out_dir: str, logger: Logger) -> str:
     """
-    Chỉ convert khi ảnh KHÔNG phải jpg/png.
-    - Ưu tiên JPEG (phổ biến nhất). Nếu ảnh có alpha sẽ flatten nền trắng.
-    - Yêu cầu Pillow: pip install pillow
+    Convert sang JPEG khi KHÔNG phải jpg/png.
+    - Ảnh có alpha → flatten nền trắng
+    - Cần Pillow
     """
     ext = os.path.splitext(in_path)[1].lower()
     if ext in [".jpg", ".jpeg", ".png"]:
-        # Không convert nữa
         logger.log("Cover : format already OK, skip convert.")
-        # Nếu là .jpeg -> đổi tên thành cover.jpg cho gọn
         if ext in [".jpeg", ".jpe"]:
             dst = os.path.join(out_dir, "cover.jpg")
             shutil.copyfile(in_path, dst)
@@ -474,8 +562,9 @@ def convert_cover_to_epub_safe(in_path: str, out_dir: str, logger: Logger) -> st
 def prepare_cover(StoryUrl: str, user_cover: str, out_dir: str, logger: Logger) -> Optional[str]:
     """
     Trả về đường dẫn file cover trong out_dir.
-    - Nếu định dạng đã hợp lệ (jpg/png) => lưu trực tiếp 'cover.jpg|png' (KHÔNG convert)
-    - Nếu không hợp lệ (webp/gif/khác)   => lưu 'cover_raw.ext' rồi convert -> 'cover.jpg'
+    - JPG/PNG → lưu trực tiếp cover.jpg|png (không convert)
+    - Khác (webp/gif/...) → lưu tạm cover_raw.ext rồi convert 1 lần → cover.jpg
+    - Nếu server thiếu Content-Type → fallback theo đuôi URL
     """
     try:
         def _save_direct_bytes(data: bytes, ext: str) -> str:
@@ -485,19 +574,23 @@ def prepare_cover(StoryUrl: str, user_cover: str, out_dir: str, logger: Logger) 
             dst = os.path.join(out_dir, f"cover{ext}")
             with open(dst, "wb") as f:
                 f.write(data)
-            logger.log(f"Cover : downloaded -> {dst}")
             return dst
 
         if user_cover:
             if re.match(r"^https?://", user_cover, flags=re.I):
                 data, ctype = _download_bytes(user_cover.strip())
-                ext = _standardize_ext_from_mime(ctype or "") or ".jpg"
+                ext = _standardize_ext_from_mime(ctype or "")
+                if not ext:
+                    # fallback theo URL nếu thiếu/mơ hồ Content-Type
+                    ext = _guess_ext_from_url(user_cover) or ".jpg"
                 if ext in [".jpg", ".jpeg", ".png", ".jpe"]:
-                    return _save_direct_bytes(data, ext)
+                    dst = _save_direct_bytes(data, ext)
+                    print(f"Cover : downloaded -> {dst}")
+                    return dst
                 tmp_path = os.path.join(out_dir, f"cover_raw{ext or '.bin'}")
                 with open(tmp_path, "wb") as f:
                     f.write(data)
-                logger.log(f"Cover : downloaded (raw) -> {tmp_path}")
+                print(f"Cover : downloaded (raw) -> {tmp_path}")
                 return convert_cover_to_epub_safe(tmp_path, out_dir, logger)
             else:
                 src = os.path.abspath(user_cover)
@@ -508,11 +601,11 @@ def prepare_cover(StoryUrl: str, user_cover: str, out_dir: str, logger: Logger) 
                 if ext in [".jpg", ".jpeg", ".png", ".jpe"]:
                     dst = os.path.join(out_dir, f"cover{('.jpg' if ext in ['.jpeg','.jpe'] else ext)}")
                     shutil.copyfile(src, dst)
-                    logger.log(f"Cover : copied -> {dst}")
+                    print(f"Cover : copied -> {dst}")
                     return dst
                 tmp_path = os.path.join(out_dir, f"cover_raw{ext or '.bin'}")
                 shutil.copyfile(src, tmp_path)
-                logger.log(f"Cover : copied (raw) -> {tmp_path}")
+                print(f"Cover : copied (raw) -> {tmp_path}")
                 return convert_cover_to_epub_safe(tmp_path, out_dir, logger)
         else:
             url = _find_cover_url_from_page(StoryUrl)
@@ -520,20 +613,24 @@ def prepare_cover(StoryUrl: str, user_cover: str, out_dir: str, logger: Logger) 
                 logger.log("[WARN] Không tìm thấy ảnh bìa trên trang.")
                 return None
             data, ctype = _download_bytes(url)
-            ext = _standardize_ext_from_mime(ctype or "") or ".jpg"
+            ext = _standardize_ext_from_mime(ctype or "")
+            if not ext:
+                ext = _guess_ext_from_url(url) or ".jpg"
             if ext in [".jpg", ".jpeg", ".png", ".jpe"]:
-                return _save_direct_bytes(data, ext)
+                dst = _save_direct_bytes(data, ext)
+                print(f"Cover : downloaded -> {dst}")
+                return dst
             tmp_path = os.path.join(out_dir, f"cover_raw{ext or '.bin'}")
             with open(tmp_path, "wb") as f:
                 f.write(data)
-            logger.log(f"Cover : downloaded (raw) -> {tmp_path}")
+            print(f"Cover : downloaded (raw) -> {tmp_path}")
             return convert_cover_to_epub_safe(tmp_path, out_dir, logger)
     except Exception as e:
         logger.log(f"[WARN] Cover error: {e}")
         return None
 
 def _cover_page_xhtml(img_filename: str) -> bytes:
-    """Tạo trang cover.xhtml tham chiếu ảnh ../Images/<img_filename>."""
+    """Trang cover.xhtml để spine mở đầu."""
     html_str = f"""<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" lang="vi">
@@ -547,12 +644,7 @@ def _cover_page_xhtml(img_filename: str) -> bytes:
 """
     return html_str.encode("utf-8")
 
-# ====================== TẠO EPUB ======================
-
-def _zip_write_uncompressed(zf: zipfile.ZipFile, arcname: str, data: bytes) -> None:
-    zi = zipfile.ZipInfo(arcname)
-    zi.compress_type = zipfile.ZIP_STORED
-    zf.writestr(zi, data)
+# ====================== TẠO OPF/NCX/NAV ======================
 
 def _make_container_xml() -> bytes:
     xml = """<?xml version="1.0" encoding="UTF-8"?>
@@ -563,43 +655,84 @@ def _make_container_xml() -> bytes:
 </container>"""
     return xml.encode("utf-8")
 
+def _make_nav_xhtml(book_title: str, nav_items: List[Tuple[str, str]]) -> bytes:
+    lis = "\n".join(
+        f'    <li><a href="{href}">{html.escape(label)}</a></li>'
+        for href, label in nav_items
+    )
+    s = f'''<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="vi">
+<head>
+  <meta charset="utf-8"/>
+  <title>{html.escape(book_title)}</title>
+</head>
+<body>
+  <nav epub:type="toc" id="toc">
+    <h1>Mục lục</h1>
+    <ol>
+{lis}
+    </ol>
+  </nav>
+</body>
+</html>
+'''
+    return s.encode("utf-8")
+
 def _make_opf(book_title: str, author: str, items: List[Tuple[str, str]],
               publisher: str = "Hishiro",
               cover_image_href: Optional[str] = None,
               cover_media_type: Optional[str] = None,
-              cover_page_href: Optional[str] = None) -> bytes:
-    """
-    items: list of (id, href) e.g., ('ch0001','Text/0001.xhtml')
-    """
+              cover_page_href: Optional[str] = None,
+              epub_target: str = EPUB_TARGET) -> bytes:
+    is_epub3 = (epub_target == "epub3")
+
     manifest = []
-    # toc.ncx
+    # Luôn có NCX cho Kobo/thiết bị cũ
     manifest.append('    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>')
-    # cover image
+
+    # Cover image
     if cover_image_href and cover_media_type:
-        manifest.append(f'    <item id="cover-image" href="{cover_image_href}" media-type="{cover_media_type}"/>')
-    # cover page
+        if is_epub3:
+            manifest.append(
+                f'    <item id="cover-image" href="{cover_image_href}" media-type="{cover_media_type}" properties="cover-image"/>'
+            )
+        else:
+            manifest.append(
+                f'    <item id="cover-image" href="{cover_image_href}" media-type="{cover_media_type}"/>'
+            )
+
+    # Cover page
     if cover_page_href:
         manifest.append(f'    <item id="cover" href="{cover_page_href}" media-type="application/xhtml+xml"/>')
-    # chapters
+
+    # nav.xhtml cho EPUB3
+    if is_epub3:
+        manifest.append('    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>')
+
+    # Chapters
     for i, h in items:
         manifest.append(f'    <item id="{i}" href="{h}" media-type="application/xhtml+xml"/>')
 
-    # Spine: cover trước, rồi chapters
+    # Spine
     spine = []
     if cover_page_href:
         spine.append('    <itemref idref="cover"/>')
     for i, _ in items:
         spine.append(f'    <itemref idref="{i}"/>')
 
-    # Metadata
+    # Metadata phụ — giữ meta name="cover" để Kobo chắc chắn nhận bìa
     extra_meta = ""
     if cover_image_href:
         extra_meta += '    <meta name="cover" content="cover-image"/>\n'
 
     cover_ref = f'<reference type="cover" title="Cover" href="{cover_page_href}"/>' if cover_page_href else ''
 
+    pkg_version = "3.0" if is_epub3 else "2.0"
+    spine_toc_attr = "" if is_epub3 else ' toc="ncx"'
+
     opf = f"""<?xml version="1.0" encoding="utf-8"?>
-<package unique-identifier="BookId" version="2.0" xmlns="http://www.idpf.org/2007/opf">
+<package unique-identifier="BookId" version="{pkg_version}" xmlns="http://www.idpf.org/2007/opf">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
     <dc:title>{html.escape(book_title)}</dc:title>
     <dc:creator opf:role="aut">{html.escape(author or "Unknown")}</dc:creator>
@@ -611,7 +744,7 @@ def _make_opf(book_title: str, author: str, items: List[Tuple[str, str]],
   <manifest>
 {chr(10).join(manifest)}
   </manifest>
-  <spine toc="ncx">
+  <spine{spine_toc_attr}>
 {chr(10).join(spine)}
   </spine>
   <guide>
@@ -622,9 +755,6 @@ def _make_opf(book_title: str, author: str, items: List[Tuple[str, str]],
     return opf.encode("utf-8")
 
 def _make_ncx(book_title: str, items: List[Tuple[str, str, str]]) -> bytes:
-    """
-    items: list of (id, href, navLabel) for chapters
-    """
     navpoints = []
     play_order = 1
     for i, href, label in items:
@@ -648,9 +778,12 @@ def _make_ncx(book_title: str, items: List[Tuple[str, str, str]]) -> bytes:
 </ncx>"""
     return ncx.encode("utf-8")
 
-def create_epub_from_html(book_title: str, author: str, out_dir: str, logger: Logger, cover_path: Optional[str]) -> str:
-    """Gom tất cả *.xhtml/*.html trong out_dir -> tạo EPUB, kèm cover nếu có.
-       LƯU Ý: EPUB sẽ lưu ở OUTPUT_ROOT (không nằm trong thư mục truyện)."""
+# ====================== TẠO EPUB ======================
+
+def create_epub_from_html(book_title: str, author: str, out_dir: str, logger: Logger,
+                          cover_path: Optional[str]) -> str:
+    """Gom các *.xhtml/*.html trong out_dir -> tạo EPUB (cover nếu có).
+       EPUB lưu ở OUTPUT_ROOT (không trong thư mục truyện)."""
     ext = ".xhtml" if SAVE_AS_XHTML else ".html"
     files = [f for f in os.listdir(out_dir) if f.lower().endswith(ext)]
     files.sort()
@@ -660,28 +793,29 @@ def create_epub_from_html(book_title: str, author: str, out_dir: str, logger: Lo
     for f in files:
         logger.log(f"Readfile : {f} from {out_dir}")
 
+    ensure_dir(OUTPUT_ROOT)
     epub_name = slugify_filename(book_title, allow_unicode=not USE_NO_DIACRITICS_FOLDER) + ".epub"
     epub_path = os.path.join(OUTPUT_ROOT, epub_name)
 
     cover_img_filename = None
     cover_media_type = None
-
     if cover_path and os.path.isfile(cover_path):
-        # chuẩn hoá tên cover trong EPUB: cover.<ext>
         ext_img = os.path.splitext(cover_path)[1].lower()
         if ext_img in [".jpeg", ".jpe"]: ext_img = ".jpg"
-        if ext_img not in [".jpg",".png",".gif"]:
-            ext_img = ".jpg"
+        if ext_img not in [".jpg",".png",".gif"]: ext_img = ".jpg"
         cover_img_filename = f"cover{ext_img}"
         cover_media_type = "image/jpeg" if ext_img==".jpg" else ("image/png" if ext_img==".png" else "image/gif")
 
     with zipfile.ZipFile(epub_path, "w") as zf:
-        # mimetype
-        _zip_write_uncompressed(zf, "mimetype", b"application/epub+zip")
+        # mimetype (không nén)
+        zi = zipfile.ZipInfo("mimetype")
+        zi.compress_type = zipfile.ZIP_STORED
+        zf.writestr(zi, b"application/epub+zip")
+
         # META-INF
         zf.writestr("META-INF/container.xml", _make_container_xml())
 
-        # OEBPS: viết cover image + cover.xhtml nếu có
+        # OEBPS/Images + cover.xhtml
         cover_page_href = None
         if cover_img_filename:
             with open(cover_path, "rb") as fp:
@@ -709,11 +843,16 @@ def create_epub_from_html(book_title: str, author: str, out_dir: str, logger: Lo
                 chap_title = f
             nav_list.append((item_id, f"Text/{f}", chap_title))
 
-        # nếu có cover, chèn navpoint 'cover' lên đầu
+        # cho cover đứng đầu spine / nav
         if cover_page_href:
             nav_list = [("cover", cover_page_href, "Bìa")] + nav_list
 
-        # content.opf
+        # EPUB3: thêm nav.xhtml (vẫn giữ NCX cho Kobo)
+        if EPUB_TARGET == "epub3":
+            nav_items = [(href, label) for (_id, href, label) in nav_list]
+            zf.writestr("OEBPS/nav.xhtml", _make_nav_xhtml(book_title, nav_items))
+
+        # content.opf + toc.ncx
         zf.writestr(
             "OEBPS/content.opf",
             _make_opf(
@@ -721,17 +860,18 @@ def create_epub_from_html(book_title: str, author: str, out_dir: str, logger: Lo
                 publisher="Hishiro",
                 cover_image_href=(f"Images/{cover_img_filename}" if cover_img_filename else None),
                 cover_media_type=cover_media_type,
-                cover_page_href=cover_page_href
+                cover_page_href=cover_page_href,
+                epub_target=EPUB_TARGET,
             )
         )
-        # toc.ncx
         zf.writestr("OEBPS/toc.ncx", _make_ncx(book_title, nav_list))
 
     logger.log(f"EPUB created: {epub_path}")
     return epub_path
 
-def create_epub_from_txt(book_title: str, author: str, out_dir: str, logger: Logger, cover_path: Optional[str]) -> str:
-    """Đọc *.txt rồi bọc XHTML tối giản -> EPUB (có cover nếu cung cấp)."""
+def create_epub_from_txt(book_title: str, author: str, out_dir: str, logger: Logger,
+                         cover_path: Optional[str]) -> str:
+    """Đọc *.txt → bọc XHTML tối giản → EPUB (có cover nếu cung cấp)."""
     files = [f for f in os.listdir(out_dir) if f.lower().endswith(".txt")]
     files.sort()
     if not files:
@@ -752,7 +892,7 @@ def create_epub_from_txt(book_title: str, author: str, out_dir: str, logger: Log
         with open(os.path.join(out_dir, fname), "w", encoding="utf-8") as fp:
             fp.write(xhtml_wrap(chap_title, content_html))
 
-    # Sau khi đổi hết sang XHTML, dùng chung hàm HTML->EPUB (có cover)
+    # Sau khi bọc XHTML, dùng pipeline HTML để tạo EPUB
     epub_path = create_epub_from_html(book_title, author, out_dir, logger, cover_path)
     return epub_path
 
@@ -777,6 +917,13 @@ def main():
     cover_in = input("Nhập đường dẫn Cover (bỏ trống để tự lấy từ web): ").strip()
     mode = input("Chọn chế độ (1=HTML, 2=TXT, 3=HTML+EPUB, 4=TXT+EPUB, 5=HTML+TXT+EPUB): ").strip()
 
+    # Hỏi target khi có tạo EPUB (mode 3/4/5)
+    if mode in {"3","4","5"}:
+        target_in = input("Chọn EPUB target (2=EPUB 2, 3=EPUB 3 compat) [2]: ").strip()
+        global EPUB_TARGET
+        EPUB_TARGET = "epub3" if target_in == "3" else "epub2"
+        print(f"EPUB target: {EPUB_TARGET}")
+
     meta = getinfo(StoryUrl)
     book_title = meta["info"].get("title") or "Truyen"
     author     = meta["info"].get("author") or "Unknown"
@@ -786,7 +933,7 @@ def main():
     logger  = Logger(os.path.join(out_dir, "log.txt"))
     logger.log(f"Output : {out_dir}")
 
-    # Chuẩn bị ảnh bìa (có thể convert nếu cần)
+    # Chuẩn bị cover (convert nếu cần)
     cover_path = prepare_cover(StoryUrl, cover_in, out_dir, logger)
 
     if mode == "1":
@@ -795,12 +942,15 @@ def main():
         download_all(chapters, out_dir, logger, False, True)
     elif mode == "3":
         download_all(chapters, out_dir, logger, True,  False)
+        print("Tạo EPUB từ file HTML...")
         create_epub_from_html(book_title, author, out_dir, logger, cover_path)
     elif mode == "4":
         download_all(chapters, out_dir, logger, False, True)
+        print("Tạo EPUB từ file TXT...")
         create_epub_from_txt(book_title, author, out_dir, logger, cover_path)
     elif mode == "5":
         download_all(chapters, out_dir, logger, True,  True)
+        print("Tạo EPUB từ file HTML...")
         create_epub_from_html(book_title, author, out_dir, logger, cover_path)
     else:
         print("Mode không hợp lệ. Vui lòng chọn 1..5.")
