@@ -1,28 +1,30 @@
 # -*- coding: utf-8 -*-
 """
-tangthuvien_net.py — Trình tải chương & tạo EPUB cho tangthuvien
+    @Author: Hishio - Cá mụp cắn cáp
+    @github: https://github.com/hishirooo
+    @date: 18-10-2025
+    @version: 1.0
+    tangthuvien_net.py — Trình tải chương & tạo EPUB cho tangthuvien
 
-CHẾ ĐỘ:
-1) Tải HTML
-2) Tải TXT
-3) Tải HTML + Tạo EPUB (đọc lại HTML đã tải)
-4) Tải TXT  + Tạo EPUB (TXT -> bọc XHTML tối giản -> EPUB)
-5) Tải HTML + TXT + Tạo EPUB (EPUB dùng HTML đã tải)
+    CHẾ ĐỘ:
+    1) Tải HTML
+    2) Tải TXT
+    3) Tải HTML + Tạo EPUB (đọc lại HTML đã tải)
+    4) Tải TXT  + Tạo EPUB (TXT -> bọc XHTML tối giản -> EPUB)
+    5) Tải HTML + TXT + Tạo EPUB (EPUB dùng HTML đã tải)
 
-COVER:
-- Sau khi nhập URL, bạn nhập đường dẫn cover (file local hoặc URL ảnh).
-- Bỏ trống sẽ tự lấy cover từ DOM: div.book-img img[src]
-- Nếu ảnh không phải JPG/PNG → convert 1 lần sang JPEG (cần Pillow).
+    COVER:
+    - Sau khi nhập URL, bạn nhập đường dẫn cover (file local hoặc URL ảnh).
+    - Bỏ trống sẽ tự lấy cover từ DOM: div.book-img img[src]
+    - Nếu ảnh không phải JPG/PNG → convert 1 lần sang JPEG (cần Pillow).
 
-LOG:
-- Thư mục đầu ra: ./Output/<Tên Truyện> (không dấu hoặc có dấu tùy cấu hình)
-- EPUB sẽ lưu ở: ./Output/<TenTruyen>.epub (không nằm trong thư mục truyện)
-- Khi tải:   Saved : 0001.xhtml - <Tiêu đề chương>
-- Khi tạo:   Readfile : 0001.xhtml from Output/<Tên Truyện>
+    LOG:
+    - Thư mục đầu ra: ./Output/<Tên Truyện> (không dấu hoặc có dấu tùy cấu hình)
+    - EPUB sẽ lưu ở: ./Output/<TenTruyen>.epub (không nằm trong thư mục truyện)
+    - Khi tải:   Saved : 0001.xhtml - <Tiêu đề chương>
+    - Khi tạo:   Readfile : 0001.xhtml from Output/<Tên Truyện>
 
-LƯU Ý: Phần lấy nội dung chương đã reset theo yêu cầu:
-- CHỈ chọn và ghép các <div class="box-chap ..."> (kể cả hidden).
-- Chưa xoá rác, chưa tách đoạn; giữ nguyên HTML thô để bạn kiểm tra.
+
 """
 
 from typing import Optional, List, Dict, Tuple
@@ -519,27 +521,46 @@ def xhtml_wrap(title: str, body_html: str) -> str:
 """
 
 def save_html(out_dir: str, idx: int, width: int, chapter_title: str, content_html: str, logger: Logger) -> str:
+    '''
+    Lưu nội dung chương dưới dạng HTML/XHTML.
+    Trả về đường dẫn file đã lưu.
+    index: số chương (dùng để đặt tên file)
+    width: số chữ số trong tên file (ví dụ 4 -> 0001, 0002, ...)
+    chapter_title: tên chương
+    content_html: nội dung chương dưới dạng HTML
+    logger: đối tượng Logger để ghi log
+    '''
     ext = "xhtml" if SAVE_AS_XHTML else "html"
     fname = f"{idx:0{width}d}.{ext}"
     fpath = os.path.join(out_dir, fname)
     with open(fpath, "w", encoding="utf-8") as f:
         f.write(xhtml_wrap(chapter_title, content_html))
-    logger.log(f"Saved : {fname} - {chapter_title}")
+    logger.log(f"[{idx:04d}] Saved : {fname} - {chapter_title}")
     return fpath
 
 def save_txt(out_dir: str, idx: int, width: int, chapter_title: str, content_html: str, logger: Logger) -> str:
+    '''
+    Lưu nội dung chương dưới dạng txt.
+    Trả về đường dẫn file telah lưu.
+    '''
     fname = f"{idx:0{width}d}.txt"
     fpath = os.path.join(out_dir, fname)
     soup = BeautifulSoup(content_html, "html.parser")
     text = soup.get_text("\n", strip=True)
     with open(fpath, "w", encoding="utf-8") as f:
         f.write(chapter_title + "\n\n" + text + "\n")
-    logger.log(f"Saved : {fname} - {chapter_title}")
+    logger.log(f"[{idx:04d}] Saved : {fname} - {chapter_title}")
     return fpath
 
 # ====================== COVER: LẤY, CHUẨN HOÁ, NHÚNG ======================
 
 def _standardize_ext_from_mime(mime: str) -> str:
+    '''
+    Chuyển đổi mime type về dạng extension.
+    Ví dụ:
+    - image/png → .png
+    '''
+    
     mime = (mime or "").split(";")[0].strip().lower()
     if mime == "image/png": return ".png"
     if mime == "image/jpeg": return ".jpg"
@@ -548,6 +569,11 @@ def _standardize_ext_from_mime(mime: str) -> str:
     return ""
 
 def _guess_ext_from_url(u: str) -> str:
+    '''
+    Chuyển đổi URL về dạng extension.
+    '''
+    
+    
     u = u.split("?")[0].split("#")[0].lower()
     for ext in (".jpg",".jpeg",".png",".gif",".webp"):
         if u.endswith(ext): return ext
@@ -717,6 +743,11 @@ def _make_opf(book_title: str, author: str, items: List[Tuple[str, str]],
               cover_media_type: Optional[str] = None,
               cover_page_href: Optional[str] = None,
               epub_target: str = EPUB_TARGET) -> bytes:
+    '''
+    make opf file
+    
+    '''
+    
     is_epub3 = (epub_target == "epub3")
 
     manifest = []
@@ -787,6 +818,9 @@ def _make_opf(book_title: str, author: str, items: List[Tuple[str, str]],
     return opf.encode("utf-8")
 
 def _make_ncx(book_title: str, items: List[Tuple[str, str, str]]) -> bytes:
+    '''
+    make ncx file
+    '''
     navpoints = []
     play_order = 1
     for i, href, label in items:
@@ -931,6 +965,10 @@ def create_epub_from_txt(book_title: str, author: str, out_dir: str, logger: Log
 # ====================== QUY TRÌNH THEO MODE ======================
 
 def download_all(chapters: List[Dict[str,str]], out_dir: str, logger: Logger, save_html_flag: bool, save_txt_flag: bool) -> None:
+    '''
+    Tạo file HTML/TXT cho tất cả chương trên.
+    '''
+    
     total = len(chapters)
     width = len(str(total if total>0 else 1))
     for idx, ch in enumerate(chapters, 1):
