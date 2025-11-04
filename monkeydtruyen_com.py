@@ -879,9 +879,6 @@ def main():
 
     chapters = _get_list_chapters(soup)
     print(f"Total chapters: {len(chapters)}")
-    if chapters:
-        print('chapters[1]: ', chapters[0])
-        print('chapters[last]: ', chapters[-1])
 
     # Chuẩn bị cover (local/URL/auto)
     cover_bytes, cover_ext, cover_mime = _load_cover_from_input(cover_in, urlStory)
@@ -901,7 +898,7 @@ def main():
     if do_epub:
         global EPUB_TARGET
         target_in = input(f"Chọn EPUB target (2=EPUB 2, 3=EPUB 3 compat) [{EPUB_TARGET[4]}]: ").strip()
-        EPUB_TARGET = "epub3" if target_in == "3" else "epub2"
+        EPUB_TARGET = "epub2" if target_in == "2" else "epub3"
         print(f"EPUB target: {EPUB_TARGET}")
         if not HAS_PILLOW and EPUB_TARGET in ["epub2", "epub3"]:
             print("⚠️ EPUB cover có thể không hiển thị tối ưu trên Kobo nếu thiếu Pillow (JPEG/Resize).")
