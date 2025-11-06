@@ -92,6 +92,63 @@ class Http:
 
 HTTP = Http()
 
+# Cache mật khẩu theo domain (WP đặt cookie wp-postpass_* theo site)
+WP_PASS_CACHE: Dict[str, str] = {}
+
+def maybe_unlock_protected(csoup: BeautifulSoup, page_url: str, pw_arg: Optional[str] = None) -> BeautifulSoup:
+    # Nếu trang là bài viết WordPress đặt password (form.post-password-form),
+    # sẽ hỏi mật khẩu (hoặc dùng pw_arg), submit tới action và re-fetch lại trang.
+    # Thành công khi trang sau đó KHÔNG còn form password.
+    try:
+        form = csoup.select_one("form.post-password-form")
+    except Exception:
+        form = None
+    if not form:
+        return csoup
+
+    from urllib.parse import urlparse, urljoin
+    import getpass
+
+    domain = urlparse(page_url).netloc
+    import os
+    password = (pw_arg or WP_PASS_CACHE.get(domain) or os.getenv('WP_PASS') or '').strip()
+
+    # Lấy thông tin form
+    action = form.get("action") or urljoin(page_url, "/wp-login.php?action=postpass")
+    inp = form.find("input", {"name": "redirect_to"})
+    redirect_to = inp.get("value") if inp and inp.get("value") else page_url
+
+    tries = 3
+    while tries > 0:
+        if not password:
+            try:
+                password = getpass.getpass(f"🔒 Chương này có mật khẩu ({domain}). Nhập mật khẩu: ").strip()
+            except Exception:
+                password = input(f"🔒 Chương này có mật khẩu ({domain}). Nhập mật khẩu: ").strip()
+
+        if not password:
+            break
+
+        data = {"post_password": password, "Submit": "Nhập", "redirect_to": redirect_to}
+        try:
+            # Gửi form để set cookie wp-postpass_*
+            HTTP.sess.post(action, data=data, headers=HEADERS, timeout=TIMEOUT)
+            # Re-fetch trang thực
+            new_soup = HTTP.get_html(page_url)
+            if not new_soup.select_one("form.post-password-form"):
+                WP_PASS_CACHE[domain] = password
+                return new_soup
+        except Exception:
+            pass
+
+        print("❌ Mật khẩu sai hoặc không mở được. Thử lại...")
+        password = ""
+        tries -= 1
+
+    print("⚠ Không mở được chương bị đặt mật khẩu — sẽ giữ nguyên nội dung thông báo.")
+    return csoup
+
+
 # ================== Parse Info + TOC =================
 def get_info_from_index(soup: BeautifulSoup) -> Dict[str,str]:
     title_node = soup.find("h1", class_="entry-title")
@@ -622,8 +679,19 @@ def download_htmls(index_url: str, out_base=DEFAULT_OUT, start=1, end=None, resu
             html_paths.append(save_path)
             continue
         try:
+            
             csoup = HTTP.get_html(curl)
+            csoup = maybe_unlock_protected(csoup, curl)
+            # Nếu vẫn còn form password sau khi thử, bỏ qua chương
+            try:
+                still_locked = csoup.select_one("form.post-password-form") is not None
+            except Exception:
+                still_locked = False
+            if still_locked:
+                print(f"[{i:04d}] LOCKED — bỏ qua: {ctitle}")
+                continue
             content_html = clean_chapter_html(csoup)
+
             if not content_html:
                 node = csoup.find("div", class_="entry-content")
                 content_html = node.decode() if node else ""
