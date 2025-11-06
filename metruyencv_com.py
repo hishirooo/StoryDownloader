@@ -101,7 +101,7 @@ def _get_book_info(soup: BeautifulSoup) -> Dict[str, str]:
 
     # Tác giả
     author = _text(info_node.select_one('a.text-gray-500'))
-
+    info['author'] = author
     
     genres_node = soup.find("div", class_="leading-10 md:leading-normal space-x-4")
     # trạng thái
@@ -112,7 +112,7 @@ def _get_book_info(soup: BeautifulSoup) -> Dict[str, str]:
     info['genres'] = " - ".join(genres)
     # image cover
     image_node = soup.find("div", class_="mb-4 md:mb-0 md:mr-6").find("img",class_="w-44 h-60 shadow-lg rounded mx-auto").get("src")
-    print(image_node)
+    #print(image_node)
     info['cover_url'] = image_node  
     return info
 
@@ -136,10 +136,14 @@ def _get_chapter_list(soup: BeautifulSoup) -> List[Dict[str, str]]:
     r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
     r.raise_for_status()
     data = r.json()
+    # ghi data thành file json để debug
+    with open("data_chapters.json", "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+    #print(f'data=',data)
     for chapter in data['data']:
         chap_info = {
-            'name': chapter['attributes']['name'],
-            'index': chapter['attributes']['index'],
+            'name': chapter["name"],
+            'index': chapter["index"]
         }
         chapter_list.append(chap_info)
     return chapter_list
@@ -158,8 +162,18 @@ def _gen_list_chapters(StoryUrl: str) -> List[Dict[str, str]]:
         })
     return chapters   
 
-UrlStory = "https://metruyencv.com/truyen/vot-thi-nhan"
-_get_book_info(_fetch_html(UrlStory))
-_get_story_id(_fetch_html(UrlStory))
+UrlStory = "https://metruyencv.com/truyen/tro-ve-1996-bat-dau-tu-cho-lon-giang-ho-ban-thit-heo-1"
+info = _get_book_info(_fetch_html(UrlStory))
+print("---------------------- Thông tin truyện ---------------------")
+print(f"Tiêu đề: {info['title']}")
+print(f"Tác giả: {info['author']}")
+print(f"Thể loại: {info['genres']}")
+print(f"Trạng thái: {info['status']}")
+print(f"Cover URL: {info['cover_url']}")
 
-
+story_id = _get_story_id(_fetch_html(UrlStory))
+print(f"Story ID: {story_id}")
+chapters = _gen_list_chapters(UrlStory)
+print(f"Tổng chương: {len(chapters)}")
+for chap in chapters:
+    print(f" - {chap['title']}: {chap['url']}")
