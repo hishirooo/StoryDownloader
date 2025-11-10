@@ -1,170 +1,181 @@
-import re, html, requests
-from urllib.parse import urljoin
+# -*- coding: utf-8 -*-
+"""
+3020_devshop_fixed.py
+- Lấy thông tin + danh sách chương từ 3020.devshop.vn
+- Tự động nhận diện kiểu trả về (dict hoặc list)
+"""
+
+import os, re, time, html, unicodedata, base64, hashlib, json
+from pathlib import Path
+from typing import List, Dict
+import requests
 from bs4 import BeautifulSoup
-
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
+import base64
+import hashlib
+import json
+from Crypto.Cipher import AES
+# =============== CẤU HÌNH ===============
 HEADERS = {"User-Agent": "Mozilla/5.0"}
+TIMEOUT  = 20
+SLEEP_BETWEEN_PAGES = 0.2
+API_LIST_CHAPS = "https://3020.devshop.vn/api/chapters/list-chapters"
 
-# ---------- Base helpers ----------
+# =============== TIỆN ÍCH ===============
+def _text(el) -> str:
+    return el.get_text(" ", strip=True) if el else ""
+
 def _fetch_html(url: str) -> BeautifulSoup:
-    r = requests.get(url, headers=HEADERS, timeout=30)
+    r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
     r.raise_for_status()
+    r.encoding = r.apparent_encoding
     return BeautifulSoup(r.text, "html.parser")
 
-def _text(el):
-    return (el.get_text(strip=True) if el else "").strip()
+# =============== AES / KEY ===============
+def _openssl_bytes_to_key(password: bytes, salt: bytes, key_len: int, iv_len: int):
+    d = b""; last = b""
+    while len(d) < key_len + iv_len:
+        last = hashlib.md5(last + password + salt).digest()
+        d += last
+    return d[:key_len], d[key_len:key_len+iv_len]
 
-# ---------- CSS helpers ----------
-_IMPORT_RE = re.compile(r'@import\s+(?:url\()?["\']?([^"\')]+)["\']?\)?\s*;', re.I)
+def _aes_encrypt(plaintext: str, passphrase: str) -> str:
+    salt = get_random_bytes(8)
+    key, iv = _openssl_bytes_to_key(passphrase.encode(), salt, 32, 16)
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    pad = 16 - (len(plaintext.encode()) % 16)
+    enc = cipher.encrypt(plaintext.encode() + bytes([pad])*pad)
+    return base64.b64encode(b"Salted__" + salt + enc).decode()
 
-def _css_decode_content(s: str) -> str:
-    s = s.strip()
-    s = s.replace(r"\A", "\n").replace(r"\a", "\n")
-    def repl_hex(m):
-        try:
-            return chr(int(m.group(1), 16))
-        except Exception:
-            return m.group(0)
-    s = re.sub(r"\\([0-9a-fA-F]{1,6})\s?", repl_hex, s)
-    s = s.replace(r"\'", "'").replace(r"\"", '"').replace(r"\\", "\\")
-    return s
+def _aes_decrypt(b64: str, passphrase: str) -> str:
+    raw = base64.b64decode(b64)
+    salt = raw[8:16]
+    key, iv = _openssl_bytes_to_key(passphrase.encode(), salt, 32, 16)
+    dec = AES.new(key, AES.MODE_CBC, iv).decrypt(raw[16:])
+    pad = dec[-1]
+    return dec[:-pad].decode()
 
-def _collect_css_texts(soup: BeautifulSoup, base_url: str):
-    css_texts = []
+def _derive_key(obf: str) -> str:
+    if "-" in obf:
+        left, right = obf.split("-", 1)
+    else:
+        mid = (len(obf)+1)//2
+        left, right = obf[:mid], obf[mid:] or "0000"
+    prod = 1
+    for ch in right:
+        prod = (prod * ord(ch)) % 255
+    out = []
+    for i, ch in enumerate(left):
+        code = ord(ch); r = (prod + i * code) % 26
+        if 65 <= code <= 90:
+            out.append(chr((code - 65 + r) % 26 + 65))
+        elif 97 <= code <= 122:
+            out.append(chr((code - 97 + r) % 26 + 97))
+        else:
+            out.append(ch)
+    return "".join(out)
 
-    # 1) inline <style>
-    for st in soup.find_all("style"):
-        if st.string:
-            css_texts.append(st.string)
+PASS = _derive_key("T5Hr41U5jKTTrtUOXdYZnyx3wjZEKUoxv16Clwwu4D5zIbd0-q9sdfh")
 
-    # 2) <link> gồm cả rel=stylesheet / preload as=style / href *.css
-    for link in soup.find_all("link"):
-        rel = (link.get("rel") or [])
-        rel = [x.lower() for x in rel]
-        as_attr = (link.get("as") or "").lower()
-        href = link.get("href")
-        if not href:
-            continue
-        take = False
-        if any("stylesheet" in x for x in rel):
-            take = True
-        if ("preload" in rel and as_attr == "style"):
-            take = True
-        if href.endswith(".css"):
-            take = True
-        if not take:
-            continue
+# =============== TRUYỆN ===============
+def get_story_id(soup: BeautifulSoup) -> int:
+    tag = soup.find("script", id="__NEXT_DATA__", type="application/json")
+    if tag and tag.string:
+        data = json.loads(tag.string)
+        return int(data["props"]["pageProps"]["story"]["id"])
+    raise RuntimeError("Không tìm thấy story.id")
 
-        css_url = urljoin(base_url, href)
-        try:
-            r = requests.get(css_url, headers=HEADERS, timeout=30)
-            if r.ok:
-                text = r.text
-                css_texts.append(text)
-                # 3) theo @import đệ quy (một tầng là đủ ở đây)
-                for imp in _IMPORT_RE.findall(text):
-                    imp_url = urljoin(css_url, imp)
-                    try:
-                        r2 = requests.get(imp_url, headers=HEADERS, timeout=30)
-                        if r2.ok:
-                            css_texts.append(r2.text)
-                        # không cần sâu quá nhiều tầng
-                    except requests.RequestException:
-                        pass
-        except requests.RequestException:
-            pass
+def get_book_info(soup: BeautifulSoup) -> Dict[str, str]:
+    title = _text(soup.find("h1", class_="story_book-info__title__1jpSQ"))
+    author = _text(soup.find("div", class_="story_book-info__author__lPhnG")).replace("Tác giả: ","")
+    genres = " - ".join(_text(a) for a in soup.select(".story_book-info__category__B1RPT a"))
+    desc = _text(soup.find("div", class_="story_card-content__NO3Br"))
+    cover = "https://3020.devshop.vn" + soup.select_one(".story_book__qq6xd img")["src"]
+    return {"title": title, "author": author, "genre": genres, "desc": desc, "cover": cover}
 
-    return css_texts
+def get_list_chapters(story_url: str) -> List[Dict[str,str]]:
+    soup = _fetch_html(story_url)
+    sid = get_story_id(soup)
+    chapters, page = [], 1
+    while True:
+        payload = {
+            "id_story": _aes_encrypt(str(sid), PASS),
+            "page": _aes_encrypt(str(page), PASS),
+            "items_per_page": _aes_encrypt("50", PASS),
+            "order": _aes_encrypt("asc", PASS),
+        }
+        r = requests.post(API_LIST_CHAPS, json=payload, headers=HEADERS, timeout=TIMEOUT)
+        r.raise_for_status()
+        raw = _aes_decrypt(r.json()["data"], PASS)
+        data = json.loads(raw)
 
-def _build_span_map_from_css(css_texts):
-    """
-    Hỗ trợ:
-      .abc::before { content: "x" "y" "\006B\0068\00F4\006E\0067" }
-      .abc:after  { content: '...' !important }
-      .a:before,.b:before{content:'...'}
-    """
-    mapping = {}
+        # ✅ fix: API có thể trả list hoặc dict
+        if isinstance(data, list):
+            rows = data
+        else:
+            rows = data.get("chapters") or data.get("data") or []
 
-    # Bóc từng block có thuộc tính content:
-    block_re = re.compile(r'(?P<selectors>[^{]+){(?P<body>[^{}]*content\s*:[^;]+;[^}]*)}', re.S)
-    str_token_re = re.compile(r'("([^"]*)"|\'([^\']*)\')')  # lấy tất cả chuỗi trong content:
+        if not rows: break
 
-    for css in css_texts:
-        for blk in block_re.finditer(css):
-            selectors = blk.group("selectors")
-            body = blk.group("body")
+        for ch in rows:
+            slug = ch.get("slug") or ch.get("slug_chapter") or ""
+            url = f"https://3020.devshop.vn/chapter/{slug}" if slug else ""
+            chapters.append({"title": ch.get("name",""), "url": url})
 
-            # Chỉ quan tâm :before / ::before / :after / ::after
-            sel_list = [s.strip() for s in selectors.split(",")]
-            sel_classes = []
-            for s in sel_list:
-                m = re.search(r'\.([A-Za-z0-9_-]+)\s*::?be?fore\b', s)
-                if not m:
-                    m = re.search(r'\.([A-Za-z0-9_-]+)\s*::?after\b', s)
-                if m:
-                    sel_classes.append(m.group(1))
-            if not sel_classes:
-                continue
-
-            # Lấy tất cả string tokens trong phần content:
-            joined = ""
-            for sm in str_token_re.finditer(body):
-                piece = sm.group(2) if sm.group(2) is not None else sm.group(3)
-                joined += _css_decode_content(piece)
-
-            if not joined:
-                continue
-
-            for cls in sel_classes:
-                # chỉ gán nếu chưa có (ưu tiên rule cụ thể trước; nếu muốn ghi đè thì bỏ if)
-                if cls not in mapping:
-                    mapping[cls] = joined
-    return mapping
-
-def _replace_spans_with_text(root: BeautifulSoup, cls_map: dict):
-    container = root.select_one("div#chapter-content-render")
-    if not container:
-        return
-    for sp in container.find_all("span"):
-        classes = sp.get("class") or []
-        buf = []
-        for c in classes:
-            t = cls_map.get(c)
-            if t:
-                buf.append(t)
-        if buf:
-            sp.replace_with("".join(buf))
-
-def _html_to_text(p_tag):
-    for br in p_tag.find_all("br"):
-        br.replace_with("\n")
-    txt = p_tag.get_text().replace("\xa0", " ")
-    return txt.strip("\n")
-
-# ---------- Public API ----------
-def _get_content_from_chapter_url(url: str) -> str:
-    soup = _fetch_html(url)
-
-    title = _text(soup.find("h1", class_="card-title"))
-    print("Chapter title:", title)
-
-    css_texts = _collect_css_texts(soup, url)
-    cls_map = _build_span_map_from_css(css_texts)
-
-    # (debug) nếu thiếu map, bạn có thể in ra vài class đầu tiên
-    # print("map size:", len(cls_map))
-    # print(list(cls_map.items())[:10])
-
-    _replace_spans_with_text(soup, cls_map)
-
-    ps = soup.select("div#chapter-content-render p")
-    blocks = []
-    for p in ps:
-        t = _html_to_text(p)
-        if t.strip() and t.strip() != "---":
-            blocks.append(t)
-    return "\n\n".join(blocks)
+        if len(rows) < 50: break
+        page += 1
+        time.sleep(SLEEP_BETWEEN_PAGES)
+    return chapters
 
 
-# --- Ví dụ dùng ---
-text = _get_content_from_chapter_url("https://monkeydtruyen.com/vo-chong-phao-hoi-hom-nay-muon-lam-giau/chuong-1.html")
-print(text)
+def _get_content_chapter(story_url: str) -> dict:
+    soup = _fetch_html(story_url)
+
+    # Ghi ra file HTML để debug
+    with open("chapter.html", "w", encoding="utf-8") as f:
+        f.write(str(soup))
+
+    # Tìm thẻ script chứa dữ liệu JSON
+    script_node = soup.find("script", id="__NEXT_DATA__", type="application/json")
+    if not script_node or not script_node.string:
+        raise RuntimeError("Không tìm thấy __NEXT_DATA__")
+
+    # Parse JSON
+    data = json.loads(script_node.string)
+
+    # Ghi ra file JSON để debug
+    with open("chapter.json", "w", encoding="utf-8") as f:
+        f.write(json.dumps(data, indent=4, ensure_ascii=False))
+
+    # Trích xuất content_comp và key_encrypt
+    try:
+        content_comp = data["props"]["pageProps"]["chapter"]["content_comp"]
+    except KeyError:
+        content_comp = None  # hoặc raise nếu bạn muốn bắt lỗi
+
+    try:
+        key_encrypt = data["props"]["pageProps"]["chapter"]["key_encrypt"]
+    except KeyError:
+        key_encrypt = None
+    print(f"content_comp: {content_comp}")
+    print(f"key_encrypt: {key_encrypt}")
+    return {
+        "content_comp": content_comp,
+        "key_encrypt": key_encrypt
+    }
+    
+
+# =============== DEMO ===============
+if __name__ == "__main__":
+    story = "https://3020.devshop.vn/story/bat-dau-tu-trang-do"
+    soup = _fetch_html(story)
+    info = get_book_info(soup)
+    print("---- THÔNG TIN ----")
+    for k,v in info.items(): print(f"{k}: {v}")
+    print("\n---- DANH SÁCH CHƯƠNG ----")
+    chaps = get_list_chapters(story)
+    print(f"Tổng số chương: {len(chaps)}")
+    for ch in chaps[:10]:
+        print(f"- {ch['title']} → {ch['url']}")
+    _get_content_chapter(chaps[0]["url"])
