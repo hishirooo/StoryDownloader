@@ -1,53 +1,76 @@
 # -*- coding: utf-8 -*-
-import os, re, time, html, base64, hashlib, json
-from typing import List, Dict
+"""
+3020_devshop.py
+- Tự động lấy danh sách + tải chương từ metruyen.xyz / 3020.devshop.vn
+- Giải mã nội dung bằng:
+    1) Python AES (mặc định)
+    2) Fallback: chạy js.js (CryptoJS) qua execjs, có truyền PASS
+- Nếu API thiếu content/key, fallback parse __NEXT_DATA__ trong HTML
+- Ghi debug ra ./debug/
+"""
+import os, re, time, json, base64, hashlib, execjs
+from pathlib import Path
+from urllib.parse import urlparse
+from typing import Dict, List
 import requests
 from bs4 import BeautifulSoup
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
 
+# ===== Config
+HEADERS = {"User-Agent": "Mozilla/5.0"}
 TIMEOUT  = 20
-SLEEP_BETWEEN_PAGES = 0.2
+SLEEP_BETWEEN_PAGES = 0.15
+DEBUG_DIR = Path("debug"); DEBUG_DIR.mkdir(exist_ok=True)
+OUT_DIR   = Path("output"); OUT_DIR.mkdir(exist_ok=True)
 
-def _text(el) -> str:
-    return el.get_text(" ", strip=True) if el else ""
+def dump(path: Path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(data if isinstance(data, str) else json.dumps(data, indent=2, ensure_ascii=False))
 
-def _fetch_html(url: str) -> BeautifulSoup:
-    r = requests.get(url, headers=_make_headers(url), timeout=TIMEOUT)
+# ===== Helpers
+def _text(el): return el.get_text(" ", strip=True) if el else ""
+def _fetch_html(url):
+    r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
     r.raise_for_status()
-    r.encoding = r.apparent_encoding
     return BeautifulSoup(r.text, "html.parser")
 
+def _base_from_url(u: str) -> str:
+    p = urlparse(u)
+    return f"{p.scheme}://{p.netloc}"
+
+# ===== OpenSSL AES helpers
 def _openssl_bytes_to_key(password: bytes, salt: bytes, key_len: int, iv_len: int):
-    d = b""; last = b""
+    d, last = b"", b""
     while len(d) < key_len + iv_len:
         last = hashlib.md5(last + password + salt).digest()
         d += last
     return d[:key_len], d[key_len:key_len+iv_len]
 
-def _aes_encrypt_openssl(plaintext: str, passphrase: str) -> str:
+def _aes_encrypt_openssl_str(plaintext: str, passphrase: str) -> str:
     salt = get_random_bytes(8)
     key, iv = _openssl_bytes_to_key(passphrase.encode(), salt, 32, 16)
     cipher = AES.new(key, AES.MODE_CBC, iv)
-    pad = 16 - (len(plaintext.encode()) % 16)
-    enc = cipher.encrypt(plaintext.encode() + bytes([pad])*pad)
-    return base64.b64encode(b"Salted__" + salt + enc).decode()
+    pad = 16 - len(plaintext.encode()) % 16
+    ct  = cipher.encrypt(plaintext.encode() + bytes([pad]) * pad)
+    return base64.b64encode(b"Salted__" + salt + ct).decode()
 
-def _aes_decrypt_openssl_raw(b64: str, passphrase: str) -> bytes:
+def _aes_decrypt_openssl_to_bytes(b64: str, passphrase: str) -> bytes:
     raw = base64.b64decode(b64)
     if not raw.startswith(b"Salted__"):
-        raise ValueError("Không đúng format OpenSSL (Salted__).")
+        raise ValueError("Không đúng định dạng OpenSSL 'Salted__'")
     salt = raw[8:16]
     key, iv = _openssl_bytes_to_key(passphrase.encode(), salt, 32, 16)
     dec = AES.new(key, AES.MODE_CBC, iv).decrypt(raw[16:])
     pad = dec[-1]
-    if pad < 1 or pad > 16:
-        raise ValueError("Padding không hợp lệ.")
+    if pad <= 0 or pad > 16:
+        raise ValueError("Padding không hợp lệ (decrypt key_encrypt)")
     return dec[:-pad]
 
+# ===== PASS derivation (giống các bản trước)
 def _derive_key(obf: str) -> str:
-    if "-" in obf:
-        left, right = obf.split("-", 1)
+    if "-" in obf: left, right = obf.split("-", 1)
     else:
         mid = (len(obf)+1)//2
         left, right = obf[:mid], obf[mid:] or "0000"
@@ -57,186 +80,181 @@ def _derive_key(obf: str) -> str:
     out = []
     for i, ch in enumerate(left):
         code = ord(ch); r = (prod + i * code) % 26
-        if 65 <= code <= 90:
-            out.append(chr((code - 65 + r) % 26 + 65))
-        elif 97 <= code <= 122:
-            out.append(chr((code - 97 + r) % 26 + 97))
-        else:
-            out.append(ch)
+        if 65 <= code <= 90:  out.append(chr((code - 65 + r) % 26 + 65))
+        elif 97 <= code <= 122: out.append(chr((code - 97 + r) % 26 + 97))
+        else: out.append(ch)
     return "".join(out)
 
 PASS = _derive_key("T5Hr41U5jKTTrtUOXdYZnyx3wjZEKUoxv16Clwwu4D5zIbd0-q9sdfh")
 
-def _base_host(url: str) -> str:
-    m = re.search(r"https?://([^/]+)", url)
-    host = m.group(1).lower() if m else "3020.devshop.vn"
-    # Hợp thức: 3020.devshop.vn hoặc metruyen.xyz
-    if "metruyen" in host:
-        return "metruyen.xyz"
-    return "3020.devshop.vn"
-
-def _api_base(url: str) -> str:
-    host = _base_host(url)
-    return f"https://{host}"
-
-def _make_headers(url: str) -> Dict[str, str]:
-    base = _api_base(url)
-    return {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "*/*",
-        "Content-Type": "application/json",
-        "Origin": base,
-        "Referer": url if "/story/" in url or "/chapter/" in url else base,
-    }
-
+# ===== Story info
 def get_story_id(soup: BeautifulSoup) -> int:
-    tag = soup.find("script", id="__NEXT_DATA__", type="application/json")
-    if tag and tag.string:
-        data = json.loads(tag.string)
-        return int(data["props"]["pageProps"]["story"]["id"])
-    raise RuntimeError("Không tìm thấy story.id")
+    data = json.loads(soup.find("script", id="__NEXT_DATA__").string)
+    return int(data["props"]["pageProps"]["story"]["id"])
 
-def get_book_info(soup: BeautifulSoup) -> Dict[str, str]:
+def get_book_info(soup: BeautifulSoup, base: str) -> Dict[str, str]:
     title = _text(soup.find("h1", class_="story_book-info__title__1jpSQ"))
     author = _text(soup.find("div", class_="story_book-info__author__lPhnG")).replace("Tác giả: ","")
     genres = " - ".join(_text(a) for a in soup.select(".story_book-info__category__B1RPT a"))
-    cover_node = soup.select_one(".story_book__qq6xd img")
-    cover = ""
-    if cover_node and cover_node.get("src"):
-        cover = _api_base(cover_node.get("src")) + cover_node["src"] if cover_node["src"].startswith("/") else cover_node["src"]
     desc = _text(soup.find("div", class_="story_card-content__NO3Br"))
+    img = soup.select_one(".story_book__qq6xd img")
+    cover = base + img["src"] if img and img.has_attr("src") and not img["src"].startswith("http") else (img["src"] if img else "")
     return {"title": title, "author": author, "genre": genres, "desc": desc, "cover": cover}
 
+# ===== List chapters
 def get_list_chapters(story_url: str) -> List[Dict[str,str]]:
+    base = _base_from_url(story_url)
     soup = _fetch_html(story_url)
     sid = get_story_id(soup)
-    api = _api_base(story_url) + "/api/chapters/list-chapters"
+    api = f"{base}/api/chapters/list-chapters"
+    headers = {**HEADERS, "Origin": base, "Referer": story_url, "Content-Type": "application/json"}
 
     chapters, page = [], 1
     while True:
         payload = {
-            "id_story": _aes_encrypt_openssl(str(sid), PASS),
-            "page": _aes_encrypt_openssl(str(page), PASS),
-            "items_per_page": _aes_encrypt_openssl("50", PASS),
-            "order": _aes_encrypt_openssl("asc", PASS),
+            "id_story": _aes_encrypt_openssl_str(str(sid), PASS),
+            "page": _aes_encrypt_openssl_str(str(page), PASS),
+            "items_per_page": _aes_encrypt_openssl_str("50", PASS),
+            "order": _aes_encrypt_openssl_str("asc", PASS),
         }
-        r = requests.post(api, json=payload, headers=_make_headers(story_url), timeout=TIMEOUT)
-        r.raise_for_status()
+        r = requests.post(api, json=payload, headers=headers, timeout=TIMEOUT)
+        dump(DEBUG_DIR/f"list_page_{page}.json", r.text)
         js = r.json()
-        raw = _aes_decrypt_openssl_raw(js["data"], PASS).decode("utf-8", "ignore")
-
-        try:
-            data = json.loads(raw)
-        except Exception:
-            data = []
-
-        rows = data if isinstance(data, list) else (data.get("chapters") or data.get("data") or [])
+        enc = js.get("data")
+        if not enc:
+            break
+        raw = _aes_decrypt_openssl_to_bytes(enc, PASS).decode("utf-8", "ignore")
+        data = json.loads(raw)
+        rows = data if isinstance(data, list) else data.get("chapters", []) or data.get("data", [])
         if not rows:
             break
-
-        for ch in rows:
-            slug = ch.get("slug") or ch.get("slug_chapter") or ""
-            url = f"{_api_base(story_url)}/chapter/{slug}" if slug else ""
-            chapters.append({"title": ch.get("name",""), "url": url})
-
+        for c in rows:
+            slug = c.get("slug") or c.get("slug_chapter") or ""
+            chapters.append({"title": c.get("name",""), "url": f"{base}/chapter/{slug}"})
         if len(rows) < 50:
             break
         page += 1
         time.sleep(SLEEP_BETWEEN_PAGES)
     return chapters
 
-def _aes_cbc_decrypt_b64_ivprefix(b64_ct: str, key_bytes: bytes) -> str:
-    """content_comp dạng base64, 16 byte đầu là IV"""
-    raw = base64.b64decode(b64_ct)
-    iv, enc = raw[:16], raw[16:]
-    cipher = AES.new(key_bytes, AES.MODE_CBC, iv)
-    dec = cipher.decrypt(enc)
+# ===== JS fallback
+def js_decrypt_with_pass(content_enc: str, key_enc: str, passphrase: str) -> str:
+    js_path = Path("js.js")
+    if not js_path.exists():
+        raise RuntimeError("Thiếu js.js (CryptoJS) để fallback.")
+    ctx = execjs.compile(js_path.read_text(encoding="utf-8"))
+    # Không tồn tại is_callable trong execjs — dùng typeof
+    typ = ctx.eval('typeof decryptContent')
+    if typ != "function":
+        raise RuntimeError("Không thấy decryptContent() trong js.js")
+    return ctx.call("decryptContent", content_enc, key_enc, passphrase)
+
+# ===== Python decrypt
+def decrypt_chapter_payload_py(content_b64: str, key_b64: str) -> str:
+    if not content_b64 or not key_b64:
+        raise RuntimeError("Thiếu content_comp hoặc key_encrypt.")
+    # 1) Giải key_encrypt (OpenSSL w/ PASS)
+    seed = _aes_decrypt_openssl_to_bytes(key_b64, PASS)  # bytes
+    # 2) SHA-256 làm key
+    key = hashlib.sha256(seed).digest()
+    # 3) content_comp = base64(iv + ciphertext)
+    enc = base64.b64decode(content_b64)
+    iv, ctb = enc[:16], enc[16:]
+    dec = AES.new(key, AES.MODE_CBC, iv).decrypt(ctb)
     pad = dec[-1]
-    if pad < 1 or pad > 16:
-        raise ValueError("Padding không hợp lệ.")
+    if pad <= 0 or pad > 16:
+        raise RuntimeError("Padding không hợp lệ (content_comp).")
     return dec[:-pad].decode("utf-8", "ignore")
 
-def get_chapter_content_from_html(chapter_url: str) -> Dict[str, str]:
-    soup = _fetch_html(chapter_url)
+# ===== get-chapter via API
+def _get_chapter_via_api(chap_url: str) -> Dict[str, str]:
+    base = _base_from_url(chap_url)
+    slug = chap_url.split("/chapter/")[-1]
+    api = f"{base}/api/chapters/get-chapter"
+    headers = {**HEADERS, "Origin": base, "Referer": chap_url, "Content-Type": "application/json"}
+
+    payload = {"slug": _aes_encrypt_openssl_str(slug, PASS)}
+    r = requests.post(api, json=payload, headers=headers, timeout=TIMEOUT)
+    dump(DEBUG_DIR/f"get_{slug}.json", r.text)
+    js = r.json()
+    enc = js.get("data")
+    if not enc:
+        return {}
+    raw = _aes_decrypt_openssl_to_bytes(enc, PASS).decode("utf-8","ignore")
+    data = json.loads(raw)
+    if isinstance(data, list) and data:
+        data = data[0]
+    d = data.get("chapter") or data
+    return {
+        "title": d.get("title") or d.get("name"),
+        "content_comp": d.get("content_comp") or d.get("contentEncrypt") or d.get("content"),
+        "key_encrypt": d.get("key_encrypt"),
+    }
+
+# ===== Fallback HTML __NEXT_DATA__
+def _get_chapter_via_html(chap_url: str) -> Dict[str, str]:
+    soup = _fetch_html(chap_url)
+    dump(DEBUG_DIR/"chapter.html", str(soup))
     node = soup.find("script", id="__NEXT_DATA__", type="application/json")
     if not node or not node.string:
-        raise RuntimeError("Không tìm thấy __NEXT_DATA__")
-
+        return {}
     data = json.loads(node.string)
-    pp = data["props"]["pageProps"]
-    chap = pp.get("chapter") or {}
-    title = chap.get("title") or chap.get("name") or ""
+    dump(DEBUG_DIR/"chapter_nextdata.json", data)
+    ch = data.get("props",{}).get("pageProps",{}).get("chapter",{})
+    if not isinstance(ch, dict):
+        return {}
+    return {
+        "title": ch.get("title") or ch.get("name"),
+        "content_comp": ch.get("content_comp") or ch.get("contentEncrypt") or ch.get("content"),
+        "key_encrypt": ch.get("key_encrypt"),
+    }
 
-    content_comp = chap.get("content_comp") or pp.get("contentEncrypt") or chap.get("content")
-    key_encrypt  = chap.get("key_encrypt")
+def get_chapter(chap_url: str) -> Dict[str, str]:
+    # 1) Thử API
+    d = _get_chapter_via_api(chap_url)
+    # 2) Nếu thiếu trường, thử HTML
+    if not d.get("content_comp") or not d.get("key_encrypt"):
+        d_html = _get_chapter_via_html(chap_url)
+        d = {**d_html, **d}  # HTML ưu tiên điền chỗ trống
 
-    if not content_comp:
-        raise RuntimeError("Chưa có nội dung.")
+    title = d.get("title") or chap_url.rsplit("/",1)[-1]
+    c = d.get("content_comp")
+    k = d.get("key_encrypt")
+    if not c or not k:
+        raise RuntimeError("Chưa có nội dung (thiếu content_comp / key_encrypt).")
 
-    # Cách A: seed = decrypt(key_encrypt, PASS)
-    tried = []
-    def try_decrypt_with_seed(seed_bytes: bytes) -> str:
-        key = hashlib.sha256(seed_bytes).digest()
-        return _aes_cbc_decrypt_b64_ivprefix(content_comp, key)
-
-    if key_encrypt:
+    # 3) Giải mã: Python → nếu fail thì JS
+    try:
+        html = decrypt_chapter_payload_py(c, k)
+    except Exception as e_py:
         try:
-            seed = _aes_decrypt_openssl_raw(key_encrypt, PASS)
-            tried.append("A")
-            return {"title": title, "content": try_decrypt_with_seed(seed)}
-        except Exception:
-            pass
+            html = js_decrypt_with_pass(c, k, PASS)
+        except Exception as e_js:
+            dump(DEBUG_DIR/"decrypt_error.txt", f"PY: {e_py}\nJS: {e_js}")
+            raise
+    return {"title": title, "content": html}
 
-    # Cách B: dùng ri -> rs[index]
-    ri = pp.get("ri"); rs = pp.get("rs")
-    if key_encrypt and isinstance(rs, dict) and isinstance(ri, str):
-        try:
-            ri_num = int(_aes_decrypt_openssl_raw(ri, PASS).decode("utf-8", "ignore").strip() or "0")
-            # chọn 1 khóa phụ từ rs theo modulo
-            keys = sorted(rs.keys(), key=lambda x: int(x) if x.isdigit() else x)
-            if keys:
-                pick = rs[keys[ri_num % len(keys)]]
-                # đôi khi pick là 1 lớp OpenSSL nữa -> seed
-                seed = _aes_decrypt_openssl_raw(pick, PASS)
-                tried.append("B1")
-                return {"title": title, "content": try_decrypt_with_seed(seed)}
-        except Exception:
-            # fallback B2: pick có thể đã là seed thô (base64)
-            try:
-                seed = base64.b64decode(pick)
-                tried.append("B2")
-                return {"title": title, "content": try_decrypt_with_seed(seed)}
-            except Exception:
-                pass
-
-    # Cách C: key_encrypt là base64 seed
-    if key_encrypt:
-        try:
-            seed = base64.b64decode(key_encrypt)
-            tried.append("C")
-            return {"title": title, "content": try_decrypt_with_seed(seed)}
-        except Exception:
-            pass
-
-    raise RuntimeError("Chưa có nội dung.")
-
-# ================= DEMO =================
-if __name__ == "__main__":
-    story = "https://3020.devshop.vn/story/bat-dau-tu-trang-do"
-    if story.startswith("https://3020.devshop.vn/story/"):
-        story = story.replace("https://3020.devshop.vn/story/", "https://metruyen.xyz/story/")
+# ===== Main
+def main():
+    story = input("URL truyện: ").strip()
+    base = _base_from_url(story)
     soup = _fetch_html(story)
-    info = get_book_info(soup)
-    print("---- THÔNG TIN ----")
-    for k,v in info.items(): print(f"{k}: {v}")
+    info = get_book_info(soup, base)
+    print(json.dumps(info, indent=2, ensure_ascii=False))
 
-    print("\n---- DANH SÁCH CHƯƠNG ----")
-    chaps = get_list_chapters(story)
-    print(f"Tổng số chương: {len(chaps)}")
-    for ch in chaps[:10]:
-        print(f"- {ch['title']} -> {ch['url']}")
+    chs = get_list_chapters(story)
+    print(f"Tổng chương: {len(chs)}")
 
-    if chaps:
-        r = get_chapter_content_from_html(chaps[0]["url"])
-        print("\nTiêu đề:", r["title"])
-        print("\nNội dung rút gọn:\n", r["content"][:600], "...")
+    # tải thử 1..3
+    s, e = 1, min(3, len(chs))
+    for i in range(s, e+1):
+        ch = chs[i-1]
+        print(f"Tải {i}/{len(chs)}: {ch['title']} ...")
+        data = get_chapter(ch["url"])
+        safe_title = re.sub(r'[\\/*?:"<>|]', '_', data["title"] or f"Chuong_{i:04d}")
+        out = OUT_DIR/f"{safe_title}.txt"
+        out.write_text(data["content"], encoding="utf-8")
+        print("✓", out)
+
+if __name__ == "__main__":
+    main()
