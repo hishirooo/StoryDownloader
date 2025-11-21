@@ -285,6 +285,7 @@ def normalize_chapter_title(t: Optional[str]) -> Optional[str]:
         rest = rest.strip()
         return f"{name} {num}: {rest}" if rest else f"{name} {num}"
     return t
+
 # lấy danh sách chương trên 1 trang mục lục
 def _extract_chapters_on_page(soup: BeautifulSoup, base_url: str):
     '''
