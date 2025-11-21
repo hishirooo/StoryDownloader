@@ -27,6 +27,16 @@ build/
 *.bat
 *.log
 
+#epub file
+*.xhtml
+*.css
+cover.jpg
+.zip
+content.html
+container.xml
+content.opf
+mimetype
+
 # IDE/editor settings
 .vscode/
 .idea/
