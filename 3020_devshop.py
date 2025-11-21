@@ -72,7 +72,7 @@ def _aes_decrypt_openssl_to_bytes(b64: str, passphrase: str) -> bytes:
 def _derive_key(obf: str) -> str:
     if "-" in obf: left, right = obf.split("-", 1)
     else:
-        mid = (len(obf)+1)//2
+        mid = (len(obf) + 1) // 2
         left, right = obf[:mid], obf[mid:] or "0000"
     prod = 1
     for ch in right:
@@ -94,7 +94,7 @@ def get_story_id(soup: BeautifulSoup) -> int:
 
 def get_book_info(soup: BeautifulSoup, base: str) -> Dict[str, str]:
     title = _text(soup.find("h1", class_="story_book-info__title__1jpSQ"))
-    author = _text(soup.find("div", class_="story_book-info__author__lPhnG")).replace("Tác giả: ","")
+    author = _text(soup.find("div", class_="story_book-info__author__lPhnG")).replace("Tác giả: ", "")
     genres = " - ".join(_text(a) for a in soup.select(".story_book-info__category__B1RPT a"))
     desc = _text(soup.find("div", class_="story_card-content__NO3Br"))
     img = soup.select_one(".story_book__qq6xd img")
