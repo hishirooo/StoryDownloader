@@ -7,7 +7,12 @@ import requests
 from bs4 import BeautifulSoup
 
 # Playwright
-from playwright.async_api import async_playwright
+try:
+    from playwright.sync_api import sync_playwright
+except ImportError:
+    import os
+    os.system("pip install playwright")
+    from playwright.sync_api import sync_playwright
 
 TIMEOUT = 25
 SLEEP_BETWEEN_PAGES = 0.15
