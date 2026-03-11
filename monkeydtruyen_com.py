@@ -26,7 +26,7 @@ TIMEOUT  = 20
 SLEEP_BETWEEN_PAGES = 0.20
 SLEEP_BETWEEN_CHAPS = 0.15
 RETRY_STATUS = {429, 500, 502, 503, 504}
-EPUB_TARGET = "epub3"   # mặc định; khi build sẽ hỏi lại
+EPUB_TARGET = "epub2"   # mặc định; khi build sẽ hỏi lại
 
 MAX_COVER_SIZE = (1600, 2400)  # Resize tối đa (w,h) cho cover
 

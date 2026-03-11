@@ -1,152 +1,342 @@
+"""ntruyen.py
 
-from typing import Optional, List, Dict, Tuple
+Helper lấy novelId + danh sách chương từ ntruyen.biz.
+
+Link chương có format:
+    https://ntruyen.biz/doc-truyen/{book_slug}-{chapter_slug}-{chapter_id}
+
+Ví dụ:
+    doc_base_url = https://ntruyen.biz/doc-truyen/canh-cua-trong-khe-nut-matthia
+    chapter_slug = chuong-1
+    chapter_id   = 4521179
+ -> https://ntruyen.biz/doc-truyen/canh-cua-trong-khe-nut-matthia-chuong-1-4521179
+
+Ghi chú:
+- Một số máy có thể bị 403 khi requests vào trang web ntruyen.biz (/truyen/...).
+  Khi đó, bạn vẫn có thể lấy novelId bằng cách “view-source” và search "novelId",
+  rồi gọi API trực tiếp: https://api.ntruyen.biz/novels/{novelId}/chapters
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass
+from typing import Dict, List, Optional
+from urllib.parse import urlparse
+
+import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse, urlunparse, urljoin
-import requests, ssl, urllib3, re, json, html, os, unicodedata, zipfile, io, datetime, shutil
 
-from requests.adapters import HTTPAdapter
-from urllib3.util import Retry
 
-# ====================== CẤU HÌNH ======================
+NTRUYEN_WEB = "https://ntruyen.biz"
+NTRUYEN_API = "https://api.ntruyen.biz"
 
-BASE = "https://truyen.tangthuvien.vn"     # mirror ổn định
-OUTPUT_ROOT = os.path.join(os.getcwd(), "Output")
-USE_NO_DIACRITICS_FOLDER = True            # True: tên thư mục không dấu; False: giữ dấu
-SAVE_AS_XHTML = True                       # Lưu trang chương là .xhtml
-
-# ---- EPUB target (mặc định EPUB 2 an toàn cho Kobo) ----
-EPUB_TARGET = "epub2"   # "epub2" | "epub3"
-
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+# Headers cho WEB (HTML)
+WEB_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36 Edg/143.0.0.0"
+    ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Language": "vi,en-US;q=0.9,en;q=0.8",
+    "Referer": f"{NTRUYEN_WEB}/",
     "Connection": "keep-alive",
 }
 
-# ====================== SESSION + TLS ======================
+# Headers cho API (JSON)
+API_HEADERS = {
+    "User-Agent": WEB_HEADERS["User-Agent"],
+    "Accept": "application/json, text/plain, */*",
+    "Origin": NTRUYEN_WEB,
+    "Referer": f"{NTRUYEN_WEB}/",
+}
 
-class TLSAdapter(HTTPAdapter):
-    """Adapter ép TLS >= 1.2 và retry hợp lý."""
-    def __init__(self, **kwargs):
-        self._ctx = ssl.create_default_context()
-        try:
-            self._ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-        except Exception:
-            pass
-        retries = Retry(
-            total=3, connect=3, read=3,
-            backoff_factor=0.5,
-            status_forcelist=(429, 500, 502, 503, 504),
-            raise_on_status=False,
-        )
-        super().__init__(max_retries=retries, **kwargs)
 
-    def init_poolmanager(self, *args, **kwargs):
-        kwargs["ssl_context"] = self._ctx
-        return super().init_poolmanager(*args, **kwargs)
+_web = requests.Session()
+_web.headers.update(WEB_HEADERS)
 
-_session = requests.Session()
-_session.headers.update(HEADERS)
-_session.mount("https://", TLSAdapter())
-_session.mount("http://", HTTPAdapter(max_retries=Retry(total=3, backoff_factor=0.5)))
+_api = requests.Session()
+_api.headers.update(API_HEADERS)
 
-# ====================== TIỆN ÍCH ======================
 
-def _canonicalize_domain(url: str) -> str:
-    """Chuyển *.tangthuvien.net -> truyen.tangthuvien.vn (tránh lỗi TLS)."""
-    u = urlparse(url)
-    host = (u.netloc or "").lower()
-    if host.endswith("tangthuvien.net"):
-        u = u._replace(scheme="https", netloc="truyen.tangthuvien.vn")
-        return urlunparse(u)
-    return url
+@dataclass
+class BookInfo:
+    title: str = ""
+    author: str = ""
+    status: str = ""
+    cover_url: str = ""
 
-def _fetch_html(url: str) -> BeautifulSoup:
-    """Tải HTML (có chuyển domain + fallback verify=False khi SSLError)."""
-    url = _canonicalize_domain(url)
-    try:
-        r = _session.get(url, timeout=30)
-        r.raise_for_status()
-    except requests.exceptions.SSLError:
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        r = _session.get(url, timeout=30, verify=False)
-        r.raise_for_status()
-    if not r.encoding or r.encoding.lower() == "iso-8859-1":
-        r.encoding = r.apparent_encoding
-    return BeautifulSoup(r.text, "html.parser")
 
-def _download_bytes(url: str):
-    """Tải bytes (ví dụ ảnh cover)."""
-    url = _canonicalize_domain(url)
-    try:
-        resp = _session.get(url, timeout=30)
-        resp.raise_for_status()
-    except requests.exceptions.SSLError:
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        resp = _session.get(url, timeout=30, verify=False)
-        resp.raise_for_status()
-    return resp.content, resp.headers.get("Content-Type")
+# --------------------------- Utils ---------------------------
 
-def _text(el) -> str:
+def extract_novel_id(text: str) -> int:
+    """Bắt novelId từ chuỗi (cả dạng thường và dạng bị escape).
+
+    Bắt được cả:
+        "novelId":39390
+        {"novelId":39390}
+        {\"novelId\":39390}
+    """
+    m = re.search(r'\\?"novelId\\?"\s*:\s*(\d+)', text)
+    if not m:
+        raise ValueError("Không tìm thấy novelId trong chuỗi")
+    return int(m.group(1))
+
+
+def _get_text(el) -> str:
     try:
         return el.get_text(" ", strip=True) if el else ""
     except Exception:
         return ""
 
-def slugify_filename(name: str, allow_unicode: bool = False) -> str:
-    """Chuẩn hoá tên thư mục/tệp hợp lệ, bỏ gạch '-' theo yêu cầu."""
-    name = (name or "").strip().replace("—","-").replace("–","-")
-    name = name.replace("-", "").strip()  # bỏ gạch ngang
-    if allow_unicode:
-        name = unicodedata.normalize("NFKC", name)
+
+def get_slug_from_truyen_url(url: str) -> str:
+    """/truyen/<slug> -> slug"""
+    path = urlparse(url).path.strip("/")
+    parts = path.split("/")
+    if len(parts) >= 2 and parts[0] == "truyen":
+        return parts[1]
+    raise ValueError("URL không đúng dạng https://ntruyen.biz/truyen/<slug>")
+
+
+def get_slug_from_doc_url(url: str) -> str:
+    """/doc-truyen/<slug> -> slug"""
+    path = urlparse(url).path.strip("/")
+    parts = path.split("/")
+    if len(parts) >= 2 and parts[0] == "doc-truyen":
+        return parts[1]
+    raise ValueError("URL không đúng dạng https://ntruyen.biz/doc-truyen/<slug>")
+
+
+def to_doc_base_url(any_book_url: str) -> str:
+    """Nhận URL /truyen/<slug> hoặc /doc-truyen/<slug> -> trả về doc base URL."""
+    u = urlparse(any_book_url)
+    parts = u.path.strip("/").split("/")
+
+    if len(parts) >= 2 and parts[0] == "doc-truyen":
+        book_slug = parts[1]
+    elif len(parts) >= 2 and parts[0] == "truyen":
+        book_slug = parts[1]
     else:
-        name = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
-    name = re.sub(r"[^\w\-. ]", "", name)
-    name = re.sub(r"\s+", " ", name).strip()
-    invalid = {"CON","PRN","AUX","NUL","COM1","COM2","COM3","COM4","COM5","COM6","COM7","COM8","COM9",
-               "LPT1","LPT2","LPT3","LPT4","LPT5","LPT6","LPT7","LPT8","LPT9"}
-    if name.upper() in invalid:
-        name = "_" + name
-    return name or "output"
+        raise ValueError("URL phải là /truyen/<slug> hoặc /doc-truyen/<slug>")
 
-def ensure_dir(path: str) -> None:
-    os.makedirs(path, exist_ok=True)
+    return f"{NTRUYEN_WEB}/doc-truyen/{book_slug}"
 
-def _get_info(soup: BeautifulSoup):
-    '''get info from soup of book page'''
+
+def build_chapter_url(doc_base_url: str, chapter_slug: str, chapter_id: int) -> str:
+    """doc_base_url + -{chapter_slug}-{chapter_id}"""
+    book_slug = get_slug_from_doc_url(doc_base_url)
+    return f"{NTRUYEN_WEB}/doc-truyen/{book_slug}-{chapter_slug}-{int(chapter_id)}"
+
+
+# --------------------------- WEB (HTML) ---------------------------
+
+def fetch_html(url: str, timeout: int = 30) -> BeautifulSoup:
+    """Tải HTML bằng session.
+
+    Nếu bị 403, thử warm-up (hit homepage) rồi retry 1 lần.
+    """
+    r = _web.get(url, timeout=timeout)
+
+    if r.status_code == 403:
+        # warm-up cookie (nếu site set)
+        try:
+            _web.get(f"{NTRUYEN_WEB}/", timeout=timeout)
+        except Exception:
+            pass
+        r = _web.get(url, timeout=timeout)
+
+    r.raise_for_status()
+    if not r.encoding or r.encoding.lower() == "iso-8859-1":
+        r.encoding = r.apparent_encoding
+
+    return BeautifulSoup(r.text, "html.parser")
+
+
+def get_novel_id_from_soup(soup: BeautifulSoup) -> int:
+    return extract_novel_id(str(soup))
+
+
+def parse_book_info(soup: BeautifulSoup) -> BookInfo:
+    """Parse thông tin cơ bản.
+
+    Lưu ý: selector có thể thay đổi theo giao diện site.
+    """
+    title = _get_text(soup.find("h1", itemprop="name"))
+
+    author = _get_text(
+        soup.find(
+            "div",
+            class_="text-sm text-black/65 dark:text-white/65 flex flex-wrap items-center gap-1",
+        )
+    ).replace("Tác giả:", "").strip()
+
+    status = _get_text(soup.find("span", itemprop="bookFormat")).strip()
+
+    cover_url = ""
+    cover_box = soup.find(
+        "div",
+        class_="relative flex-shrink-0 w-[179px] h-[234px] sm:w-[219px] sm:h-[288px]",
+    )
+    if cover_box and cover_box.find("img") and cover_box.find("img").get("src"):
+        cover_url = cover_box.find("img")["src"].split("?")[0]
+
+    return BookInfo(title=title, author=author, status=status, cover_url=cover_url)
+
+
+# --------------------------- API (JSON) ---------------------------
+
+def fetch_chapters_page(
+    novel_id: int,
+    page: int = 1,
+    limit: int = 50,
+    sort: str = "asc",
+    keyword: str = "",
+    timeout: int = 30,
+) -> Dict:
+    """GET /novels/{id}/chapters"""
+    url = f"{NTRUYEN_API}/novels/{int(novel_id)}/chapters"
+    params = {"page": int(page), "keyword": keyword, "limit": int(limit), "sort": sort}
+    r = _api.get(url, params=params, timeout=timeout)
+    r.raise_for_status()
+    return r.json()
+
+
+def fetch_all_chapters(
+    novel_id: int,
+    limit: int = 50,
+    sort: str = "asc",
+    keyword: str = "",
+) -> List[Dict]:
+    """Lấy toàn bộ chapters bằng API (dựa vào totalPages trong response)."""
+    first = fetch_chapters_page(novel_id, page=1, limit=limit, sort=sort, keyword=keyword)
+    total_pages = int(first.get("totalPages", 1))
+
+    chapters: List[Dict] = list(first.get("chapters", []))
+    for p in range(2, total_pages + 1):
+        j = fetch_chapters_page(novel_id, page=p, limit=limit, sort=sort, keyword=keyword)
+        chapters.extend(j.get("chapters", []))
+
+    return chapters
+
+
+def attach_chapter_urls(doc_base_url: str, chapters: List[Dict]) -> List[Dict]:
+    """Gắn field url vào từng chapter theo format ntruyen."""
+    out: List[Dict] = []
+    for ch in chapters:
+        cid = ch.get("id")
+        cslug = ch.get("slug")
+        if cid is None or not cslug:
+            continue
+        item = dict(ch)
+        item["url"] = build_chapter_url(doc_base_url, str(cslug), int(cid))
+        out.append(item)
+    return out
+
+
+# --------------------------- High-level helpers ---------------------------
+
+def get_all_chapters_for_book_url(
+    book_url: str,
+    limit: int = 50,
+    sort: str = "asc",
+    keyword: str = "",
+    debug_save_html: Optional[str] = None,
+) -> Dict:
+    """Nhập URL /truyen/<slug> hoặc /doc-truyen/<slug> -> trả dict:
+
+    {
+        "novelId": int,
+        "docBaseUrl": str,
+        "info": BookInfo,
+        "chapters": [ {id,name,slug,url,...}, ... ]
+    }
+
+    Nếu bị 403 khi tải HTML, bạn có thể lấy novelId thủ công và dùng get_all_chapters_by_id().
+    """
+    doc_base_url = to_doc_base_url(book_url)
+
+    # Luôn cố tải từ /truyen/<slug> vì trang đó thường có __NEXT_DATA__/novelId
+    if "/truyen/" in book_url:
+        book_page_url = book_url
+    else:
+        # nếu người dùng đưa /doc-truyen/<slug>, thử map về /truyen/<slug>
+        book_slug = get_slug_from_doc_url(book_url)
+        book_page_url = f"{NTRUYEN_WEB}/truyen/{book_slug}"
+
+    soup = fetch_html(book_page_url)
+
+    if debug_save_html:
+        with open(debug_save_html, "w", encoding="utf-8") as f:
+            f.write(str(soup))
+
+    novel_id = get_novel_id_from_soup(soup)
+    info = parse_book_info(soup)
+
+    chapters = fetch_all_chapters(novel_id, limit=limit, sort=sort, keyword=keyword)
+    chapters = attach_chapter_urls(doc_base_url, chapters)
+
+    return {
+        "novelId": novel_id,
+        "docBaseUrl": doc_base_url,
+        "info": info,
+        "chapters": chapters,
+    }
+
+
+def get_all_chapters_by_id(
+    novel_id: int,
+    doc_base_url: str,
+    limit: int = 50,
+    sort: str = "asc",
+    keyword: str = "",
+) -> Dict:
+    """Dùng khi bạn đã có novel_id, không cần tải HTML (né 403)."""
+    chapters = fetch_all_chapters(novel_id, limit=limit, sort=sort, keyword=keyword)
+    chapters = attach_chapter_urls(doc_base_url, chapters)
+    return {
+        "novelId": int(novel_id),
+        "docBaseUrl": doc_base_url,
+        "chapters": chapters,
+    }
+
+def _get_content_from_chapter_url(chapter_url: str, timeout: int = 3) -> str:
+    """Lấy nội dung chương từ URL chương."""
+    soup = fetch_html(chapter_url, timeout=timeout)
     
-    # ghi ra file HTML để debug
-    with open("debug_book.html", "w", encoding="utf-8") as f:
+    # ghi ra file để debug
+    with open("debug_chapter.html", "w", encoding="utf-8") as f:
         f.write(str(soup))
-    # <h1 class="font-semibold text-xl text-center sm:text-left" itemprop="name">Cánh Cửa Trong Khe Nứt</h1>    
-    title = _text(soup.find("h1", itemprop="name"))
-    print("Title:", title)
-    
-    author = _text(soup.find("div", class_="text-sm text-black/65 dark:text-white/65 flex flex-wrap items-center gap-1")).replace("Tác giả: ", "")
-    print("Author:", author)
-    #<span class="text-sm">Trạng thái: <span itemprop="bookFormat">Đã hoàn thành</span>
-    status = _text(soup.find("span", itemprop="bookFormat"))
-    print("Status:", status)
-    
-    genres=[]
-    # cover = soup.find("img", class_="cover")["src"] if soup.find("img", class_="cover") else ""
-    # return {
-    #     "title": title,
-    #     "author": author,
-    #     "cover": cover,
-    # }
+    content_div = soup.find("div", class_="reading-content")
+    if not content_div:
+        raise ValueError("Không tìm thấy nội dung chương trong trang.")
+    return str(content_div)
 
 
-def _get_content_chapter(soup: BeautifulSoup):
-    """Lấy nội dung chương từ BeautifulSoup của trang chương."""
-    content = soup
-    # ghi ra file XHTML/HTML để debug
-    filename = "debug_chapter.xhtml" if SAVE_AS_XHTML else "debug_chapter.html"
-    with open(filename, "w", encoding="utf-8") as f:
-        f.write(str(content))
 
-url ="https://ntruyen.biz/truyen/canh-cua-trong-khe-nut-matthia"
+# --------------------------- Demo ---------------------------
 
-_get_info(_fetch_html(url))
-#_get_content_chapter(_fetch_html(url))
+if __name__ == "__main__":
+    # Ví dụ:
+    # book_url = "https://ntruyen.biz/truyen/canh-cua-trong-khe-nut-matthia"
+    book_url = "https://ntruyen.biz/truyen/quan-tai-mo-tram-ma-tan-vuong-phi-tu-dia-nguc-tro-ve"
+
+    print("---------------Info-----------------")
+    try:
+        data = get_all_chapters_for_book_url(book_url, limit=50, debug_save_html="debug_book.html")
+        print("novelId =", data["novelId"])
+        print("docBaseUrl =", data["docBaseUrl"])
+        print("title =", data["info"].title)
+        print("chapters =", len(data["chapters"]))
+        
+        print("---------------Get content-------------------")
+        _get_content_from_chapter_url(data["chapters"][0]["url"]) 
+    except requests.HTTPError as e:
+        print("HTTPError:", e)
+        print("Nếu bị 403 khi tải HTML, hãy lấy novelId thủ công (view-source) rồi dùng get_all_chapters_by_id().")
+
+    # Ví dụ dùng novelId thủ công:
+    # doc_base = "https://ntruyen.biz/doc-truyen/canh-cua-trong-khe-nut-matthia"
+    # data2 = get_all_chapters_by_id(39390, doc_base)
+    # print("chapters =", len(data2["chapters"]))
