@@ -568,5 +568,5 @@ def download_and_build_epub(url_story: str):
 
 
 if __name__ == "__main__":
-    url = "https://julynovel.blog/truyen/de-toi-viet-thu-tinh-thay-ngai-nhe/"
+    url = "https://luclacnho2810.wordpress.com/bo-tat-dien-cuong-qua/"
     download_and_build_epub(url)
