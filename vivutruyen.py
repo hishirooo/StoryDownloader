@@ -1,46 +1,32 @@
 # -*- coding: utf-8 -*-
 """
-vivutruyen2_downloader_improved.py
-
-Mục tiêu:
-- Chỉ cần nhập URL truyện
-- Tự lấy info truyện
-- Tự lấy danh sách chương từ trang truyện
-- Tự follow link "ĐỌC TIẾP" hoặc chương kế tiếp
-- Làm sạch nội dung mạnh hơn, tránh hút menu / footer / Prev / Next / category
-- Mỗi chương chỉ fetch 1 lần, không tải lặp lại khi save HTML
-- Chống trùng chapter theo URL + chapter number + slug path
-- Lưu HTML từng chương + build EPUB2
+vivutruyen2_downloader.py
+Chỉ cần nhập URL truyện:
+- Tự lấy thông tin truyện
+- Tự lấy 5 chương đầu từ listing
+- Tự lần theo dòng "ĐỌC TIẾP: ..." để tải các chương tiếp theo
+- Tự làm sạch nội dung chương (loại link đọc tiếp, script, quảng cáo)
+- Tự tải cover + convert JPEG nếu có Pillow
+- Tự lưu HTML từng chương
+- Tự build EPUB2
 """
 
 from __future__ import annotations
 
-from bs4 import BeautifulSoup, Comment, Tag
+from bs4 import BeautifulSoup, Comment
 from typing import Optional, List, Dict, Tuple
-from urllib.parse import urljoin, urlparse, urlunparse
-import requests
-import re
-import html
-import os
-import unicodedata
-import zipfile
-import time
-import datetime as dt
-import io
-import copy
+from urllib.parse import urljoin, urlparse
+import requests, re, html, os, unicodedata, zipfile, time, datetime as dt, io
 
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    )
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 }
 TIMEOUT = 25
-SLEEP_BETWEEN_CHAPS = 0.15
+SLEEP_BETWEEN_CHAPS = 0.2
 RETRY_STATUS = {429, 500, 502, 503, 504}
 MAX_COVER_SIZE = (1600, 2400)
 MAX_FOLLOW_CHAPTERS = 10000
-MIN_CONTENT_TEXT_LEN = 120
 
 try:
     from PIL import Image
@@ -79,40 +65,25 @@ def _slugify_vi(s: str) -> str:
 
 
 def _normalize_url(url: str) -> str:
-    url = (url or "").strip()
+    url = html.unescape((url or "").strip())
     if not url:
         return ""
     if url.startswith("//"):
         url = "https:" + url
-
-    p = urlparse(url)
-    scheme = p.scheme or "https"
-    netloc = p.netloc.lower().replace("www.", "")
-    path = re.sub(r"/+", "/", p.path or "/")
-    if path != "/" and path.endswith("/"):
-        path = path[:-1]
-    return urlunparse((scheme, netloc, path, "", p.query, ""))
-
-
-def _normalized_netloc(url: str) -> str:
-    try:
-        return urlparse(_normalize_url(url)).netloc
-    except Exception:
-        return ""
-
-
-def _path_key(url: str) -> str:
-    try:
-        return urlparse(_normalize_url(url)).path.strip("/").lower()
-    except Exception:
-        return ""
+    parts = urlparse(url)
+    scheme = (parts.scheme or "https").lower()
+    netloc = parts.netloc.lower()
+    path = re.sub(r"/+", "/", parts.path or "/").rstrip("/")
+    if not path:
+        path = "/"
+    return f"{scheme}://{netloc}{path}"
 
 
 def _same_story_path(url_a: str, url_b: str) -> bool:
     try:
-        a = urlparse(_normalize_url(url_a))
-        b = urlparse(_normalize_url(url_b))
-        return a.netloc == b.netloc and a.path.strip("/") == b.path.strip("/")
+        a = urlparse(url_a)
+        b = urlparse(url_b)
+        return a.netloc.replace("www.", "") == b.netloc.replace("www.", "") and a.path.strip("/") == b.path.strip("/")
     except Exception:
         return False
 
@@ -169,7 +140,6 @@ def _get_book_info(soup: BeautifulSoup, story_url: str) -> Dict[str, str]:
     if not info["title"]:
         info["title"] = _text(soup.title) or "Truyện"
 
-    # Kiểu dt/dd hoặc summary-heading/summary-content
     dts = soup.select("dt, .summary-heading")
     dds = soup.select("dd, .summary-content")
     if dts and dds:
@@ -185,26 +155,16 @@ def _get_book_info(soup: BeautifulSoup, story_url: str) -> Dict[str, str]:
             elif "thể loại" in key and val:
                 info["genre"] = val
 
-    # Fallback cho dạng:
-    # <ul class="info-truyen ...">
-    #   <li><b>Tác giả:</b> ...</li>
-    #   <li><b>Thể Loại:</b> <a>Hiện đại</a></li>
-    #   <li><b>Trạng Thái:</b> Hoàn thành</li>
     if info["author"] == "Unknown" or info["genre"] == "N/A" or info["status"] == "N/A":
-        for li in soup.select("ul.info-truyen li"):
+        for li in soup.select("ul.info-truyen li, .info-truyen li"):
             b = li.find("b")
             if not b:
                 continue
-
             key = _text(b).lower().strip()
-
-            # clone li để bỏ thẻ <b> rồi lấy phần value còn lại
             li_clone = BeautifulSoup(str(li), "html.parser")
             b_clone = li_clone.find("b")
             if b_clone:
                 b_clone.extract()
-
-            # nếu có link thì ưu tiên lấy text từ link
             links = li_clone.find_all("a")
             if links:
                 val = ", ".join(_text(a) for a in links if _text(a))
@@ -218,6 +178,28 @@ def _get_book_info(soup: BeautifulSoup, story_url: str) -> Dict[str, str]:
             elif "trạng thái" in key and val:
                 info["status"] = val
 
+    if info["author"] == "Unknown" or info["genre"] == "N/A" or info["status"] == "N/A":
+        for node in soup.find_all(["div", "li", "p", "span"]):
+            txt = _text(node)
+            if not txt or len(txt) > 250:
+                continue
+            low = txt.lower()
+
+            if "tác giả" in low and info["author"] == "Unknown":
+                m = re.search(r"tác\s*giả\s*:\s*([^\n|]+?)(?=\s*(thể\s*loại|trạng\s*thái)\s*:|$)", txt, re.I)
+                if m and m.group(1).strip():
+                    info["author"] = m.group(1).strip()
+
+            if "thể loại" in low and info["genre"] == "N/A":
+                m = re.search(r"thể\s*loại\s*:\s*([^\n|]+?)(?=\s*(trạng\s*thái|tác\s*giả)\s*:|$)", txt, re.I)
+                if m and m.group(1).strip():
+                    info["genre"] = m.group(1).strip()
+
+            if "trạng thái" in low and info["status"] == "N/A":
+                m = re.search(r"trạng\s*thái\s*:\s*([^\n|]+?)(?=\s*(thể\s*loại|tác\s*giả)\s*:|$)", txt, re.I)
+                if m and m.group(1).strip():
+                    info["status"] = m.group(1).strip()
+
     if info["genre"] == "N/A":
         tags = [a.get_text(" ", strip=True) for a in soup.select("a[rel='tag'], .genres-content a, .category a, .tags a")]
         tags = [x for x in tags if x]
@@ -226,11 +208,11 @@ def _get_book_info(soup: BeautifulSoup, story_url: str) -> Dict[str, str]:
 
     cover_selectors = [
         ".image-truyen img",
+        ".book-thumb img",
         ".summary_image img",
-        "img.img-fluid",
+        ".detail-thumbnail img",
         ".book-cover img",
         ".entry-content img",
-        "img",
     ]
     for sel in cover_selectors:
         n = soup.select_one(sel)
@@ -242,13 +224,14 @@ def _get_book_info(soup: BeautifulSoup, story_url: str) -> Dict[str, str]:
             or n.get("data-original")
             or n.get("src")
             or ""
-        )
+        ).strip()
         if not src:
             continue
-        src_lower = src.lower()
-        if any(x in src_lower for x in ["logo", "icon", "avatar", "banner"]):
+        full = urljoin(story_url, src)
+        low = full.lower()
+        if "/themes/" in low or "/cache/" in low or "logo" in low or "icon" in low:
             continue
-        info["cover_url"] = urljoin(story_url, src)
+        info["cover_url"] = full
         break
 
     desc_selectors = [
@@ -265,49 +248,22 @@ def _get_book_info(soup: BeautifulSoup, story_url: str) -> Dict[str, str]:
 
     return info
 
+
 # =========================
-# Chapter helpers
+# Chapter list from story page (seed list)
 # =========================
 def _extract_chapter_number(url_or_text: str) -> Optional[float]:
-    s = (url_or_text or "").lower()
-
-    patterns = [
-        r"chuong[-\s_/.:]*([0-9]+(?:[._-][0-9]+)?)",
-        r"chương[-\s_/.:]*([0-9]+(?:[._-][0-9]+)?)",
-        r"chapter[-\s_/.:]*([0-9]+(?:[._-][0-9]+)?)",
-    ]
-    for pat in patterns:
-        m = re.search(pat, s, re.I)
-        if m:
-            raw = m.group(1).replace("_", ".").replace("-", ".")
-            try:
-                return float(raw)
-            except Exception:
-                pass
-    return None
+    s = url_or_text or ""
+    m = re.search(r"chuong[-\s_/]*([0-9]+(?:[._-][0-9]+)?)", s, re.I)
+    if not m:
+        return None
+    raw = m.group(1).replace("_", ".").replace("-", ".")
+    try:
+        return float(raw)
+    except Exception:
+        return None
 
 
-def _chapter_slug_key(url: str) -> str:
-    path = _path_key(url)
-    m = re.search(r"(chuong[-\w.]+)$", path, re.I)
-    return (m.group(1).lower() if m else path)
-
-
-def _looks_like_chapter_url(url: str) -> bool:
-    u = (url or "").lower()
-    return "/chuong-" in u or "/chương-" in u or re.search(r"/chapter[-_/]", u) is not None
-
-
-def _chapter_sort_key(ch: Dict[str, str]):
-    num = ch.get("chapter_no")
-    if num is None:
-        num = _extract_chapter_number((ch.get("url") or "") + " " + (ch.get("title") or ""))
-    return (num is None, num if num is not None else 10**9, ch.get("url", ""))
-
-
-# =========================
-# Get initial chapter list
-# =========================
 def _get_list_chapters(soup: BeautifulSoup, story_url: str) -> List[Dict[str, str]]:
     candidates: List[Dict[str, str]] = []
     seen = set()
@@ -326,24 +282,52 @@ def _get_list_chapters(soup: BeautifulSoup, story_url: str) -> List[Dict[str, st
             if not href:
                 continue
             full = urljoin(story_url, href)
-            if not _looks_like_chapter_url(full):
+            if "/chuong-" not in full.lower():
                 continue
             key = _normalize_url(full)
             if key in seen:
                 continue
             seen.add(key)
-            chapter_no = _extract_chapter_number(full + " " + title)
             candidates.append({
                 "title": title or os.path.basename(full.rstrip("/")),
                 "url": full,
-                "chapter_no": chapter_no,
             })
 
-    return sorted(candidates, key=_chapter_sort_key)
+    def sort_key(ch: Dict[str, str]):
+        num = _extract_chapter_number(ch.get("url", "") + " " + ch.get("title", ""))
+        if num is None:
+            return (10**9, ch.get("url", ""))
+        return (num, ch.get("url", ""))
+
+    candidates = sorted(candidates, key=sort_key)
+    return candidates
+
+def _extract_all_chapter_links_from_soup(soup: BeautifulSoup, base_url: str) -> List[str]:
+    urls: List[str] = []
+
+    for a in soup.find_all("a", href=True):
+        href = _normalize_url(urljoin(base_url, a["href"].strip()))
+        if href and re.search(r"/chuong[-\s_]*\d+$", href, re.I):
+            urls.append(href)
+
+    raw_text = soup.get_text("\n", strip=True)
+    for m in re.finditer(r'https?://[^\s\'"<>]+', raw_text, flags=re.I):
+        u = _normalize_url(m.group(0).strip().rstrip(").,;]"))
+        if u and re.search(r"/chuong[-\s_]*\d+$", u, re.I):
+            urls.append(u)
+
+    out: List[str] = []
+    seen = set()
+    for u in urls:
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
 
 
 # =========================
-# Content extraction
+# Chapter parsing + next pointer
 # =========================
 JUNK_LINE_PATTERNS = [
     r"^\s*ĐỌC\s*TIẾP\s*:\s*https?://\S+\s*$",
@@ -353,118 +337,37 @@ JUNK_LINE_PATTERNS = [
     r"mời\s+quý\s+độc\s+giả",
     r"click\b",
     r"nguồn\s*:",
-    r"^\s*prev\s*$",
-    r"^\s*next\s*$",
-    r"^\s*đăng\s*ký\s*$",
-    r"^\s*đăng\s*nhập\s*$",
-    r"^\s*tài\s*khoản\s*$",
-    r"^\s*trang\s*chủ\s*$",
-    r"^\s*thể\s*loại\s*$",
-    r"^\s*đề\s*cử\s*$",
-    r"^\s*xem\s*nhiều\s*$",
-    r"^\s*mới\s*cập\s*nhật\s*$",
-    r"^\s*mới\s*nhất\s*$",
-    r"^\s*website\s+đang\s+trong\s+quá\s+trình\s+thử\s+nghiệm\s*$",
-    r"^\s*quay\s+lại\s+chương\s+\d+\s*:?[\s]*$",
-    r"^\s*chương\s+\d+\s*$",
-    r"^\s*chuong\s+\d+\s*$",
-    r"^\s*\d+\s*$",
-]
-
-BAD_EXACT_LINES = {
-    "cập nhật", "mới nhất", "thể loại", "ngược", "ngôn tình", "truyện teen",
-    "shoujo", "truyện chữ", "trọng sinh", "truyện tranh", "sủng", "sắc",
-    "smut", "tiểu thuyết", "khoa huyễn", "nữ phụ", "school life",
-    "slice of life", "mạt thế", "night owl", "trinh thám", "huyền huyễn",
-    "cổ đại", "hài hước", "hiện đại", "đô thị", "khác", "xuyên không",
-    "cung đấu", "gia đấu", "adult", "harem", "manhwa", "điền văn",
-    "đoản văn", "nữ cường", "action", "hệ thống", "adventure", "drama",
-    "dị giới", "xuyên sách", "linh dị", "kinh dị", "ngôn linh", "tâm linh",
-    "tâm lý", "kỳ ảo", "báo thù", "khoa học viễn tưởng", "boylove", "đam mỹ",
-    "tu tiên", "tiên giới", "tiên hiệp", "huyền ảo", "giả tưởng khoa học",
-    "hợp đồng cá cược",
-}
-
-REMOVE_SELECTORS = [
-    "script", "style", "noscript", "iframe", "svg", "canvas", "form",
-    "header", "footer", "nav", "aside",
-    ".sharedaddy", ".ads", ".ad", ".advertisement", ".banner", ".breadcrumbs",
-    ".social-share", ".related-posts", ".related", ".tags", ".tagcloud",
-    ".entry-meta", ".post-navigation", ".navigation", ".nav-links",
-    ".wp-block-buttons", ".wp-block-button", ".mvp-post-soc-wrap",
-    ".ez-toc-container", ".code-block", ".code-block-1", ".code-block-2",
-    ".jp-relatedposts", ".post-tags", ".sidebar", ".widget",
-    ".comment-respond", ".comments-area", ".quads-location",
-]
-
-CONTENT_SELECTORS = [
-    "#chapter-content-render",
-    ".reading-content",
-    "article .chapter-content",
-    ".chapter-content",
-    "article .entry-content",
-    ".entry-content",
-    ".text-left",
-    "article",
 ]
 
 
-def _remove_unwanted_tags(node: Tag) -> None:
-    for sel in REMOVE_SELECTORS:
-        for tag in node.select(sel):
-            tag.decompose()
-
+def _remove_unwanted_tags(node):
     for tag in node.find_all(["script", "style", "noscript", "iframe", "svg", "canvas", "form"]):
         tag.decompose()
-
     for c in node.find_all(string=lambda t: isinstance(t, Comment)):
         c.extract()
 
-    for tag in node.find_all(attrs={"hidden": True}):
-        tag.decompose()
 
-    for tag in node.find_all(style=True):
-        style = (tag.get("style") or "").lower().replace(" ", "")
-        if "display:none" in style or "visibility:hidden" in style:
-            tag.decompose()
+def _find_content_node(soup: BeautifulSoup):
+    selectors = [
+        "#chapter-content-render",
+        ".reading-content",
+        ".entry-content",
+        ".text-left",
+        "article .entry-content",
+        ".chapter-content",
+        "main",
+    ]
+    for sel in selectors:
+        n = soup.select_one(sel)
+        if n and len(n.get_text(" ", strip=True)) > 100:
+            return n
 
-
-def _score_content_node(node: Tag) -> Tuple[int, int, int]:
-    text = node.get_text(" ", strip=True).replace("\xa0", " ")
-    text_len = len(text)
-    p_count = len(node.find_all("p"))
-    br_count = len(node.find_all("br"))
-    bad_hits = 0
-    lower_text = text.lower()
-    for token in ["đăng ký", "đăng nhập", "prev", "next", "website đang trong quá trình thử nghiệm", "thể loại"]:
-        if token in lower_text:
-            bad_hits += 1
-    return (text_len - bad_hits * 300, p_count, br_count)
-
-
-def _find_content_node(soup: BeautifulSoup) -> Tag:
-    candidates: List[Tag] = []
-
-    for sel in CONTENT_SELECTORS:
-        for n in soup.select(sel):
-            if isinstance(n, Tag):
-                txt = n.get_text(" ", strip=True)
-                if len(txt) >= MIN_CONTENT_TEXT_LEN:
-                    candidates.append(n)
-
-    if not candidates:
-        for n in soup.find_all(["article", "section", "div", "main"]):
-            if not isinstance(n, Tag):
-                continue
-            txt = n.get_text(" ", strip=True)
-            if len(txt) >= MIN_CONTENT_TEXT_LEN:
-                candidates.append(n)
-
-    if not candidates:
-        return soup.body or soup
-
-    best = max(candidates, key=_score_content_node)
-    return best
+    divs = sorted(
+        soup.find_all("div"),
+        key=lambda d: len(d.get_text(" ", strip=True)),
+        reverse=True,
+    )
+    return divs[0] if divs else soup
 
 
 def _pick_chapter_title(soup: BeautifulSoup, fallback: str = "Chương") -> str:
@@ -473,7 +376,6 @@ def _pick_chapter_title(soup: BeautifulSoup, fallback: str = "Chương") -> str:
         "h1.entry-title",
         "h1.card-title",
         "main h1",
-        "article h1",
         "h1",
         "h2",
     ]
@@ -485,257 +387,143 @@ def _pick_chapter_title(soup: BeautifulSoup, fallback: str = "Chương") -> str:
     return fallback
 
 
-def _is_junk_line(line: str) -> bool:
-    s = (line or "").strip().replace("\xa0", " ")
-    if not s:
-        return True
-
-    lower = s.lower()
-
-    for pat in JUNK_LINE_PATTERNS:
-        if re.search(pat, s, re.I):
-            return True
-
-    if lower in BAD_EXACT_LINES:
-        return True
-
-    if len(s) <= 3 and re.fullmatch(r"\d+", s):
-        return True
-
-    if len(s) <= 18 and lower in {"prev", "next", "hết"}:
-        return lower != "hết"
-
-    # menu / category lines thường rất ngắn và không có dấu câu kết câu
-    if len(s) <= 22 and not re.search(r"[.!?…,:;”\"]$", s):
-        if lower in BAD_EXACT_LINES:
-            return True
-
-    return False
-
-
-def _paragraphs_from_node(content_node: Tag) -> List[str]:
-    paragraphs: List[str] = []
-
-    p_tags = content_node.find_all("p")
-    if p_tags:
-        for p in p_tags:
-            txt = p.get_text(" ", strip=True).replace("\xa0", " ")
-            txt = re.sub(r"\s+", " ", txt).strip()
-            if not txt or _is_junk_line(txt):
-                continue
-            paragraphs.append(txt)
-    else:
-        raw_text = content_node.get_text("\n", strip=True).replace("\xa0", " ")
-        raw_text = re.sub(r"\n?\s*ĐỌC\s*TIẾP\s*:\s*https?://\S+.*$", "", raw_text, flags=re.I | re.S)
-        for ln in raw_text.split("\n"):
-            txt = re.sub(r"\s+", " ", ln).strip()
-            if not txt or _is_junk_line(txt):
-                continue
-            paragraphs.append(txt)
-
-    cleaned: List[str] = []
-    seen_tail = set()
-    for txt in paragraphs:
-        key = txt.lower()
-        # chặn trùng đoạn do site render lặp
-        if key in seen_tail and len(txt) < 50:
-            continue
-        seen_tail.add(key)
-        cleaned.append(txt)
-
-    # cắt từ dòng đọc tiếp trở xuống nếu vẫn còn sót
-    stop_idx = None
-    for i, txt in enumerate(cleaned):
-        if re.search(r"đọc\s*tiếp", txt, re.I):
-            stop_idx = i
-            break
-    if stop_idx is not None:
-        cleaned = cleaned[:stop_idx]
-
-    return cleaned
-
-
-def _find_next_url(content_node: Tag, raw_text: str, base_url: str, story_url: str) -> Optional[str]:
-    story_netloc = _normalized_netloc(story_url)
-    current_num = _extract_chapter_number(base_url)
-
+def _find_next_url(content_node, raw_text: str, base_url: str, story_url: str) -> Optional[str]:
+    # Ưu tiên regex text kiểu: ĐỌC TIẾP : https://...
     m = re.search(r"ĐỌC\s*TIẾP\s*:\s*(https?://\S+)", raw_text, flags=re.I)
     if m:
         return _normalize_url(m.group(1).strip())
 
-    best_candidate: Tuple[float, str] | None = None
-
+    # Tìm trong các thẻ a
     for a in content_node.find_all("a", href=True):
         href = urljoin(base_url, a["href"].strip())
-        href_n = _normalize_url(href)
-        if not _looks_like_chapter_url(href_n):
-            continue
-        if story_netloc and _normalized_netloc(href_n) and _normalized_netloc(href_n) != story_netloc:
-            # vẫn cho phép đổi giữa vivutruyen.net / vivutruyen2.net nếu path chapter hợp lệ
-            if not any(host in _normalized_netloc(href_n) for host in ["vivutruyen.net", "vivutruyen2.net"]):
-                continue
-
         txt = a.get_text(" ", strip=True)
-        if "đọc tiếp" in txt.lower():
-            return href_n
+        if "đọc tiếp" in txt.lower() and "/chuong-" in href.lower():
+            return _normalize_url(href)
 
-        num = _extract_chapter_number(href_n + " " + txt)
-        if num is None:
-            continue
-        if current_num is not None and num < current_num:
-            continue
-        if best_candidate is None or num > best_candidate[0]:
-            best_candidate = (num, href_n)
-
-    if best_candidate:
-        return best_candidate[1]
+    # fallback: tìm link chương lớn nhất trong content
+    chapter_links = []
+    for a in content_node.find_all("a", href=True):
+        href = urljoin(base_url, a["href"].strip())
+        if "/chuong-" in href.lower():
+            chapter_links.append(href)
+    if chapter_links:
+        chapter_links = sorted(set(chapter_links), key=lambda u: (_extract_chapter_number(u) is None, _extract_chapter_number(u) or 10**9, u))
+        return _normalize_url(chapter_links[-1])
 
     return None
+
+
+def _clean_text_lines(text: str) -> List[str]:
+    text = text.replace("\r", "")
+    lines = [ln.strip() for ln in text.split("\n")]
+    cleaned: List[str] = []
+    for line in lines:
+        if not line:
+            if cleaned and cleaned[-1] != "":
+                cleaned.append("")
+            continue
+        bad = False
+        for pat in JUNK_LINE_PATTERNS:
+            if re.search(pat, line, re.I):
+                bad = True
+                break
+        if bad:
+            continue
+        cleaned.append(line)
+
+    # bỏ dòng trống thừa đầu/cuối
+    while cleaned and cleaned[0] == "":
+        cleaned.pop(0)
+    while cleaned and cleaned[-1] == "":
+        cleaned.pop()
+    return cleaned
 
 
 def fetch_chapter_content(url: str, story_url: str) -> Dict[str, str]:
     soup = _fetch_html(url)
     title = _pick_chapter_title(soup)
-    source_node = _find_content_node(soup)
-    content_node = copy.copy(source_node)
-    # deep copy qua parse lại html để tránh decompose làm side-effect
-    content_node = BeautifulSoup(str(source_node), "html.parser")
-    working_node = content_node.find() or content_node
+    content_node = _find_content_node(soup)
+    _remove_unwanted_tags(content_node)
 
-    _remove_unwanted_tags(working_node)
+    raw_text = content_node.get_text("\n", strip=True).replace("\xa0", " ")
+    next_url = _find_next_url(content_node, raw_text, url, story_url)
+    discovered_links = _extract_all_chapter_links_from_soup(soup, url)
 
-    raw_text = working_node.get_text("\n", strip=True).replace("\xa0", " ")
-    next_url = _find_next_url(working_node, raw_text, url, story_url)
-    paragraphs = _paragraphs_from_node(working_node)
+    raw_text = re.sub(r"\n?\s*ĐỌC\s*TIẾP\s*:\s*https?://\S+.*$", "", raw_text, flags=re.I | re.S)
+    lines = _clean_text_lines(raw_text)
 
-    parts = [f"<p>{html.escape(p)}</p>" for p in paragraphs if p]
+    parts: List[str] = []
+    for ln in lines:
+        if not ln:
+            continue
+        safe = html.escape(ln)
+        parts.append(f"<p>{safe}</p>")
+
     content_html = "\n".join(parts) if parts else "<p>(Trống)</p>"
-
-    chapter_no = _extract_chapter_number(url + " " + (title or ""))
     return {
         "title": title or "Chương",
         "content_html": content_html,
         "url": url,
         "next_url": next_url or "",
-        "chapter_no": chapter_no,
-        "paragraph_count": len(paragraphs),
+        "discovered_links": discovered_links,
     }
 
 
 # =========================
-# Collect all chapters without re-fetching later
+# Follow next chain
 # =========================
-def _register_chapter(
-    chapters_by_url: Dict[str, Dict[str, str]],
-    chapter_num_map: Dict[float, str],
-    slug_map: Dict[str, str],
-    chap: Dict[str, str],
-) -> bool:
-    url_n = _normalize_url(chap.get("url", ""))
-    if not url_n:
-        return False
-
-    chap = dict(chap)
-    chap["url"] = url_n
-    chap_no = chap.get("chapter_no")
-    if chap_no is None:
-        chap_no = _extract_chapter_number(url_n + " " + chap.get("title", ""))
-        chap["chapter_no"] = chap_no
-
-    slug_key = _chapter_slug_key(url_n)
-
-    if url_n in chapters_by_url:
-        old = chapters_by_url[url_n]
-        if not old.get("content_html") and chap.get("content_html"):
-            chapters_by_url[url_n] = chap
-        return False
-
-    if chap_no is not None and chap_no in chapter_num_map:
-        old_url = chapter_num_map[chap_no]
-        old = chapters_by_url.get(old_url, {})
-        old_len = len(old.get("content_html", ""))
-        new_len = len(chap.get("content_html", ""))
-        if new_len > old_len:
-            chapters_by_url.pop(old_url, None)
-            chapters_by_url[url_n] = chap
-            chapter_num_map[chap_no] = url_n
-            slug_map[slug_key] = url_n
-        return False
-
-    if slug_key and slug_key in slug_map:
-        old_url = slug_map[slug_key]
-        old = chapters_by_url.get(old_url, {})
-        old_len = len(old.get("content_html", ""))
-        new_len = len(chap.get("content_html", ""))
-        if new_len > old_len:
-            chapters_by_url.pop(old_url, None)
-            chapters_by_url[url_n] = chap
-            if chap_no is not None:
-                chapter_num_map[chap_no] = url_n
-            slug_map[slug_key] = url_n
-        return False
-
-    chapters_by_url[url_n] = chap
-    if chap_no is not None:
-        chapter_num_map[chap_no] = url_n
-    if slug_key:
-        slug_map[slug_key] = url_n
-    return True
-
-
 def _collect_all_chapters(story_url: str, seed_chapters: List[Dict[str, str]]) -> List[Dict[str, str]]:
     if not seed_chapters:
         return []
 
-    chapters_by_url: Dict[str, Dict[str, str]] = {}
-    chapter_num_map: Dict[float, str] = {}
-    slug_map: Dict[str, str] = {}
+    chapter_map: Dict[str, Dict[str, str]] = {}
+    order_urls: List[str] = []
 
-    sorted_seed = sorted(seed_chapters, key=_chapter_sort_key)
+    for ch in seed_chapters:
+        u = _normalize_url(ch["url"])
+        if u not in chapter_map:
+            chapter_map[u] = {"title": ch.get("title", ""), "url": ch["url"]}
+            order_urls.append(u)
 
-    for idx, seed in enumerate(sorted_seed, start=1):
-        url = _normalize_url(seed["url"])
-        print(f"[SEED {idx:04d}/{len(sorted_seed):04d}] {url}", flush=True)
+    # lần theo từ chapter cuối cùng có sẵn trong listing
+    current_url = _normalize_url(seed_chapters[-1]["url"])
+    visited_follow = set(order_urls)
+
+    while current_url and len(order_urls) < MAX_FOLLOW_CHAPTERS:
         try:
-            chap = fetch_chapter_content(url, story_url)
-            if not chap.get("title") and seed.get("title"):
-                chap["title"] = seed["title"]
-            _register_chapter(chapters_by_url, chapter_num_map, slug_map, chap)
-            time.sleep(SLEEP_BETWEEN_CHAPS)
-        except Exception as e:
-            print(f"⚠ Lỗi seed chapter {url}: {e}", flush=True)
+            chap = fetch_chapter_content(current_url, story_url)
+            next_url = _normalize_url(chap.get("next_url", ""))
+            if not next_url:
+                break
+            if next_url in visited_follow:
+                break
+            if "/chuong-" not in next_url.lower():
+                break
 
-    if not chapters_by_url:
-        return []
-
-    # Follow từ chapter lớn nhất hiện có
-    chapters_sorted = sorted(chapters_by_url.values(), key=_chapter_sort_key)
-    current = chapters_sorted[-1]
-    current_url = _normalize_url(current["url"])
-    visited_follow = set(chapters_by_url.keys())
-
-    while current_url and len(chapters_by_url) < MAX_FOLLOW_CHAPTERS:
-        current_chap = chapters_by_url.get(current_url)
-        next_url = _normalize_url((current_chap or {}).get("next_url", ""))
-        if not next_url:
-            break
-        if next_url in visited_follow:
-            break
-        if not _looks_like_chapter_url(next_url):
-            break
-
-        try:
-            chap = fetch_chapter_content(next_url, story_url)
-            added = _register_chapter(chapters_by_url, chapter_num_map, slug_map, chap)
+            chapter_map[next_url] = {
+                "title": chap.get("next_url", "").split("/")[-1].replace("-", " ").title(),
+                "url": next_url,
+            }
+            order_urls.append(next_url)
             visited_follow.add(next_url)
-            print(f"[FOLLOW] {'+' if added else '='} {next_url}", flush=True)
-            current_url = _normalize_url(chap.get("url", next_url))
+            current_url = next_url
+            print(f"[FOLLOW] + {next_url}", flush=True)
             time.sleep(SLEEP_BETWEEN_CHAPS)
         except Exception as e:
             print(f"⚠ Lỗi follow next từ {current_url}: {e}", flush=True)
             break
 
-    return sorted(chapters_by_url.values(), key=_chapter_sort_key)
+    # sort lại bằng số chương nếu parse được
+    chapters = list(chapter_map.values())
+    chapters = sorted(
+        chapters,
+        key=lambda ch: (
+            _extract_chapter_number(ch.get("url", "") + " " + ch.get("title", "")) is None,
+            _extract_chapter_number(ch.get("url", "") + " " + ch.get("title", "")) or 10**9,
+            ch.get("url", ""),
+        ),
+    )
+    return chapters
 
 
 # =========================
@@ -768,12 +556,11 @@ HTML_TEMPLATE = """<!doctype html>
 
 def save_chapter_html(book_title: str, chapter_idx: int, chap: Dict[str, str], out_dir: str) -> str:
     os.makedirs(out_dir, exist_ok=True)
-    display_title = chap.get("title") or f"Chương {chapter_idx}"
-    fname = f"{chapter_idx:04d} - {_safe_filename(display_title)}.html"
+    fname = f"{chapter_idx:04d} - {_safe_filename(chap.get('title') or f'Chuong {chapter_idx}')}.html"
     path = os.path.join(out_dir, fname)
     html_out = HTML_TEMPLATE.format(
-        doc_title=f"{book_title} - {display_title}",
-        chapter_title=html.escape(display_title),
+        doc_title=f"{book_title} - {chap.get('title') or f'Chương {chapter_idx}'}",
+        chapter_title=html.escape(chap.get('title') or f"Chương {chapter_idx}"),
         book_title=html.escape(book_title or "Truyện"),
         src=chap.get("url") or "",
         content=chap.get("content_html") or "<p>(Không có nội dung)</p>",
@@ -784,15 +571,20 @@ def save_chapter_html(book_title: str, chapter_idx: int, chap: Dict[str, str], o
 
 
 def save_all_chapters_to_html(book_title: str, chapters: List[Dict[str, str]], out_dir: str) -> List[str]:
-    saved: List[str] = []
     total = len(chapters)
-    for i, chap in enumerate(chapters, start=1):
+    saved: List[str] = []
+
+    for i, info in enumerate(chapters, start=1):
         try:
+            chap = fetch_chapter_content(info["url"], story_url="")
+            if not chap.get("title") and info.get("title"):
+                chap["title"] = info["title"]
             p = save_chapter_html(book_title, i, chap, out_dir)
             print(f"[{i:04d}/{total:04d}] Saved HTML: {p}", flush=True)
             saved.append(p)
+            time.sleep(SLEEP_BETWEEN_CHAPS)
         except Exception as e:
-            print(f"[{i:04d}/{total:04d}] ERROR save HTML {chap.get('url')}: {e}", flush=True)
+            print(f"[{i:04d}/{total:04d}] ERROR {info.get('url')}: {e}", flush=True)
     return saved
 
 
@@ -1048,10 +840,10 @@ def download_html_and_build_epub2(story_url: str):
     os.makedirs(html_out_dir, exist_ok=True)
     os.makedirs(epub_out_dir, exist_ok=True)
 
-    print("\n[1/2] Lưu HTML...")
+    print("\n[1/2] Tải HTML...")
     html_paths = save_all_chapters_to_html(title, chapters, html_out_dir)
     if not html_paths:
-        raise ValueError("Không lưu được HTML chương nào.")
+        raise ValueError("Không tải được HTML chương nào.")
 
     print(f"✔ Đã lưu HTML: {len(html_paths)} file(s)")
 
