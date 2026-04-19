@@ -28,6 +28,7 @@ RETRY_STATUS = {429, 500, 502, 503, 504}
 MAX_COVER_SIZE = (1600, 2400)
 MAX_FOLLOW_CHAPTERS = 10000
 
+
 try:
     from PIL import Image
     HAS_PILLOW = True
@@ -329,6 +330,32 @@ def _extract_all_chapter_links_from_soup(soup: BeautifulSoup, base_url: str) -> 
 # =========================
 # Chapter parsing + next pointer
 # =========================
+# =========================
+# Chapter parsing + next pointer
+# =========================
+# Danh sách thể loại truyện – dùng để lọc dòng rác ngắn trùng tên thể loại
+GENRE_TAGS: set[str] = {
+    # Tiếng Việt
+    "khoa huyễn", "nữ phụ", "mạt thế", "trinh thám", "huyền huyễn",
+    "cổ đại", "hài hước", "hiện đại", "đô thị", "khác", "xuyên không",
+    "cung đấu", "gia đấu", "điền văn", "đoản văn", "nữ cường",
+    "hệ thống", "dị giới", "xuyên sách", "linh dị", "kinh dị",
+    "ngôn linh", "tâm linh", "tâm lý", "kỳ ảo", "báo thù",
+    "hợp đồng cá cược", "khoa học viễn tưởng", "giả tưởng khoa học",
+    "đam mỹ", "tu tiên", "ngôn tình", "trọng sinh", "truyện teen",
+    "truyện chữ", "truyện tranh", "sủng", "sắc", "tiểu thuyết",
+    "lãng mạn", "ngược", "võ hiệp", "kiếm hiệp", "đồng nhân",
+    "quân sự", "lịch sử", "Light Novel".lower(), "manga", "manhwa",
+    "manhua", "webtoon", "one shot", "doujinshi",
+    # Tiếng Anh (thường xuất hiện trên vivutruyen)
+    "adult", "harem", "action", "adventure", "drama", "school life",
+    "slice of life", "night owl", "boylove", "romance", "fantasy",
+    "comedy", "horror", "mystery", "sci-fi", "supernatural",
+    "shoujo", "shounen", "seinen", "josei", "smut", "ecchi",
+    "yaoi", "yuri", "gender bender", "martial arts", "mecha",
+    "psychological", "tragedy", "mature",
+}
+
 JUNK_LINE_PATTERNS = [
     r"^\s*ĐỌC\s*TIẾP\s*:\s*https?://\S+\s*$",
     r"^\s*https?://\S+\s*$",
@@ -337,14 +364,62 @@ JUNK_LINE_PATTERNS = [
     r"mời\s+quý\s+độc\s+giả",
     r"click\b",
     r"nguồn\s*:",
+    # Menu / navigation rác
+    r"^(Đăng Ký|Đăng Nhập|Thoát|Thống Kê|Đề Cử|Xem Nhiều|Mới Cập Nhật|Mới Nhất|Thể Loại|Ngược|Ngôn Tình|Truyện Teen|Shoujo|Truyện Chữ|Trọng Sinh|Truyện Tranh|Sủng|Sắc|Smut|Tiểu thuyết|Prev|Next|Trang chủ|Tài Khoản|Home|Scroll Up|Khám phá thêm)$",
+    # Dòng "Chương" trơ trọi
+    r"^Chương\s*$",
+    # Footer rác vivutruyen
+    r"Website đang trong quá trình thử nghiệm",
+    # Breadcrumb rác
+    r"^Home\s*/",
 ]
 
 
 def _remove_unwanted_tags(node):
-    for tag in node.find_all(["script", "style", "noscript", "iframe", "svg", "canvas", "form"]):
+    """Loại bỏ tất cả các thẻ HTML rác trước khi trích xuất text."""
+    # 1. Thẻ không liên quan đến nội dung
+    for tag in node.find_all(["script", "style", "noscript", "iframe",
+                              "svg", "canvas", "form", "nav", "header",
+                              "footer"]):
         tag.decompose()
+
+    # 2. Comment HTML
     for c in node.find_all(string=lambda t: isinstance(t, Comment)):
         c.extract()
+
+    # 3. Google-anno-skip (block quảng cáo thể loại chèn giữa nội dung)
+    for div in node.find_all("div", class_="google-anno-skip"):
+        div.decompose()
+
+    # 4. Navigation bar, breadcrumb, nút prev/next chapter
+    junk_selectors = [
+        ".uk-navbar", ".uk-navbar-nav", ".uk-breadcrumb",
+        "[class*='breadcrumb']",
+        ".prev_chap", ".next_chap",
+        "a.prev_chap", "a.next_chap",
+        "[class*='chapter-nav']", "[class*='chap-nav']",
+        ".chapter-button", ".chapter-btn",
+        "[id='invisible-link']",
+        ".social-share", ".share-buttons",
+    ]
+    for sel in junk_selectors:
+        for el in node.select(sel):
+            el.decompose()
+
+    # 5. Xóa các button (nút Prev/Next)
+    for btn in node.find_all("button"):
+        btn.decompose()
+    for a_tag in node.find_all("a", class_=lambda c: c and "uk-button" in c):
+        a_tag.decompose()
+
+    # 6. Xóa các div chứa danh sách link thể loại (nhiều link ngắn liên tiếp)
+    for div in node.find_all("div"):
+        links = div.find_all("a")
+        if len(links) >= 5:
+            # Nếu div chứa ≥5 link và hầu hết text ngắn → đây là block thể loại
+            short_links = sum(1 for a in links if len(a.get_text(strip=True)) < 25)
+            if short_links >= len(links) * 0.7:
+                div.decompose()
 
 
 def _find_content_node(soup: BeautifulSoup):
@@ -422,6 +497,8 @@ def _clean_text_lines(text: str) -> List[str]:
             if cleaned and cleaned[-1] != "":
                 cleaned.append("")
             continue
+
+        # Kiểm tra regex junk patterns
         bad = False
         for pat in JUNK_LINE_PATTERNS:
             if re.search(pat, line, re.I):
@@ -429,6 +506,18 @@ def _clean_text_lines(text: str) -> List[str]:
                 break
         if bad:
             continue
+
+        # Kiểm tra dòng ngắn trùng tên thể loại (case-insensitive)
+        if line.lower().strip() in GENRE_TAGS:
+            continue
+
+        # Lọc dòng quá ngắn chỉ chứa 1-2 từ không phải nội dung truyện
+        # (ví dụ: tên menu, nút bấm, label…)
+        stripped_lower = line.lower().strip()
+        if len(stripped_lower) <= 3 and not stripped_lower[0].isdigit():
+            # Bỏ qua các dòng ≤3 ký tự không phải số chương ("1.", "2.", v.v.)
+            continue
+
         cleaned.append(line)
 
     # bỏ dòng trống thừa đầu/cuối
@@ -443,19 +532,32 @@ def fetch_chapter_content(url: str, story_url: str) -> Dict[str, str]:
     soup = _fetch_html(url)
     title = _pick_chapter_title(soup)
     content_node = _find_content_node(soup)
-    _remove_unwanted_tags(content_node)
 
-    raw_text = content_node.get_text("\n", strip=True).replace("\xa0", " ")
-    next_url = _find_next_url(content_node, raw_text, url, story_url)
+    # ⚠ Lấy next_url + discovered_links TRƯỚC KHI dọn rác HTML,
+    #   vì _remove_unwanted_tags sẽ xóa luôn các link navigation/ĐỌC TIẾP.
+    raw_text_for_nav = content_node.get_text("\n", strip=True).replace("\xa0", " ")
+    next_url = _find_next_url(content_node, raw_text_for_nav, url, story_url)
     discovered_links = _extract_all_chapter_links_from_soup(soup, url)
+
+    # Bây giờ mới dọn rác để lấy nội dung sạch
+    _remove_unwanted_tags(content_node)
+    raw_text = content_node.get_text("\n", strip=True).replace("\xa0", " ")
 
     raw_text = re.sub(r"\n?\s*ĐỌC\s*TIẾP\s*:\s*https?://\S+.*$", "", raw_text, flags=re.I | re.S)
     lines = _clean_text_lines(raw_text)
-
     parts: List[str] = []
+    
+    # Chuẩn hóa tên truyện để so sánh (dùng để phát hiện và xóa tên truyện bị lặp)
+    clean_title = (title or "").strip().lower()
+
     for ln in lines:
         if not ln:
             continue
+            
+        # Nếu dòng hiện tại giống hệt tên truyện thì bỏ qua (không lưu vào nội dung)
+        if clean_title and ln.lower() == clean_title:
+            continue
+            
         safe = html.escape(ln)
         parts.append(f"<p>{safe}</p>")
 
