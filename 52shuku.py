@@ -8,6 +8,7 @@ import requests
 from bs4 import BeautifulSoup
 from typing import List, Dict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import traceback
 
 # =============== CẤU HÌNH ===============
 HEADERS = {
@@ -233,4 +234,30 @@ def main():
     print("\n--- HOÀN THÀNH ---")
 
 if __name__ == "__main__":
-    main()
+    while True:
+        try:
+            # Xóa sạch màn hình console trước khi bắt đầu tải truyện mới
+            os.system('cls' if os.name == 'nt' else 'clear')
+            
+            # Chạy chương trình chính
+            main()
+            
+        except Exception as e:
+            # Bắt lỗi nếu có crash
+            print("\n" + "="*40)
+            print("[!] ĐÃ XẢY RA LỖI NGHIÊM TRỌNG:")
+            print(e)
+            print("-" * 40)
+            traceback.print_exc()
+            print("="*40)
+            
+        finally:
+            # Hỏi người dùng muốn tải tiếp hay nghỉ
+            print("\n" + "="*40)
+            tiep_tuc = input("Bạn có muốn tải truyện khác không? (y/n) [Mặc định: y]: ").strip().lower()
+            
+            # Nếu gõ 'n' thì thoát vòng lặp, tắt chương trình
+            if tiep_tuc == 'n':
+                print("Tạm biệt!")
+                break
+            # Nếu gõ phím khác hoặc Enter thì vòng lặp while quay lại từ đầu (chạy lại main)
