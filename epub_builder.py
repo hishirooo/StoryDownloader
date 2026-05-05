@@ -4,7 +4,7 @@ epub_builder: Module chung để đóng gói EPUB2 đơn giản.
 PHIÊN BẢN TỐI ƯU: Không tải trùng, hỗ trợ cache từ HTML/dict
 """
 from datetime import datetime, timezone
-import zipfile, html, time, re, os, json
+import zipfile, html, time, re, os, json, sys
 from typing import Callable, List, Dict, Optional, Union
 from pathlib import Path
 from bs4 import BeautifulSoup
@@ -31,9 +31,37 @@ def _safe_fs_name(name: str, maxlen: int = 150) -> str:
     s = re.sub(r"\s+", " ", s).strip().rstrip(".")
     return (s[:maxlen] or "book")
 
+def _safe_print(message: str) -> None:
+    try:
+        sys.stdout.buffer.write((message + "\n").encode("utf-8", errors="replace"))
+    except Exception:
+        try:
+            sys.stdout.write(message + "\n")
+        except Exception:
+            pass
+
+
+def _normalize_xhtml_fragment(html_fragment: str) -> str:
+    """Chuyển các đoạn HTML sang XHTML hợp lệ cho EPUB."""
+    if not html_fragment:
+        return html_fragment or ""
+
+    void_tags = [
+        "br", "img", "hr", "meta", "link", "input", "source",
+        "embed", "param", "area", "base", "col", "command",
+        "keygen", "track", "wbr"
+    ]
+    pattern = re.compile(
+        r'<(?P<tag>' + '|'.join(void_tags) + r')(?P<attrs>\s[^>/]*?)?\s*(?<!/)>',
+        flags=re.I
+    )
+
+    return pattern.sub(lambda m: f"<{m.group('tag')}{m.group('attrs') or ''}/>", html_fragment)
+
+
 def _extract_content_from_html(html_path: str) -> Dict:
     """Trích xuất title và content_html từ file HTML đã lưu."""
-    print(f"📄 [EPUB] Đọc từ HTML cache: {os.path.basename(html_path)}")
+    _safe_print(f"[EPUB] Doc tu HTML cache: {os.path.basename(html_path)}")
     
     with open(html_path, 'r', encoding='utf-8') as f:
         soup = BeautifulSoup(f.read(), 'html.parser')
@@ -102,9 +130,9 @@ def create_epub(book_url: str,
     book_title = book_title or "Truyện"
     author = author or "–"
 
-    print(f"\n{'='*60}")
-    print(f"🚀 BẮT ĐẦU TẠO EPUB: {book_title}")
-    print(f"{'='*60}")
+    _safe_print(f"\n{'='*60}")
+    _safe_print(f"BAT DAU TAO EPUB: {book_title}")
+    _safe_print(f"{'='*60}")
 
     # Thu thập nội dung các chương
     items = []
@@ -116,9 +144,7 @@ def create_epub(book_url: str,
         # ========== ƯU TIÊN 1: Dùng chapters_data nếu có ==========
         if chapters_data and idx <= len(chapters_data):
             c = chapters_data[idx - 1]
-            print(f"✅ [{idx:04d}] SỬ DỤNG DỮ LIỆU ĐÃ TẢI (từ chapters_data): {c.get('title', chapter_title)}")
-            if not c.get("title"):
-                c["title"] = chapter_title
+            _safe_print(f"[INFO] [{idx:04d}] Su dung du lieu da tai tu chapters_data: {c.get('title', chapter_title)}")
             c["title"] = _normalize_title(c["title"])
             items.append(c)
             continue
@@ -142,11 +168,11 @@ def create_epub(book_url: str,
                     items.append(c)
                     continue
                 except Exception as e:
-                    print(f"⚠️  [{idx:04d}] Lỗi đọc HTML cache: {e}, sẽ tải mới...")
+                    _safe_print(f"[WARNING] [{idx:04d}] Loi doc HTML cache: {e}, se tai moi...")
         
         # ========== ƯU TIÊN 3: Tải mới ==========
         if fetch_fn:
-            print(f"🌐 [{idx:04d}] ĐANG TẢI MỚI TỪ INTERNET: {chapter_url}")
+            _safe_print(f"[INFO] [{idx:04d}] Dang tai moi tu Internet: {chapter_url}")
             c = fetch_fn(chapter_url)
             if not c.get("title"):
                 c["title"] = chapter_title
@@ -154,7 +180,7 @@ def create_epub(book_url: str,
             items.append(c)
             time.sleep(sleep)
         else:
-            print(f"❌ [{idx:04d}] KHÔNG THỂ LẤY NỘI DUNG: Không có fetch_fn và không tìm thấy cache")
+            _safe_print(f"[ERROR] [{idx:04d}] Khong the lay noi dung: Khong co fetch_fn va khong tim thay cache")
             items.append({
                 "title": _normalize_title(chapter_title),
                 "content_html": "<p>(Không có nội dung)</p>",
@@ -171,12 +197,12 @@ def create_epub(book_url: str,
         else:
             fetched_new_count += 1
 
-    print(f"\n{'='*60}")
-    print(f"📊 TỔNG KẾT:")
-    print(f"   • Tổng số chương đã xử lý: {len(items)}")
-    print(f"   • Đọc từ cache HTML: {used_cache_count}")
-    print(f"   • Tải mới từ internet: {fetched_new_count}")
-    print(f"{'='*60}\n")
+    _safe_print(f"\n{'='*60}")
+    _safe_print(f"TONG KET:")
+    _safe_print(f"   - Tong so chuong da xu ly: {len(items)}")
+    _safe_print(f"   - Doc tu cache HTML: {used_cache_count}")
+    _safe_print(f"   - Tai moi tu internet: {fetched_new_count}")
+    _safe_print(f"{'='*60}\n")
 
     # Xử lý cover
     cover_name = None
@@ -189,7 +215,7 @@ def create_epub(book_url: str,
     # Đường dẫn EPUB đầu ra
     out_path = out_epub_path or (_safe_fs_name(book_title) + ".epub")
 
-    print(f"📦 Đang tạo file EPUB: {out_path}")
+    _safe_print(f"[EPUB] Dang tao file EPUB: {out_path}")
 
     with zipfile.ZipFile(out_path, "w") as z:
         # 1) mimetype
@@ -230,7 +256,7 @@ def create_epub(book_url: str,
                 '<link rel="stylesheet" type="text/css" href="../Styles/style.css"/>\n'
                 f"<title>{html.escape(c['title'])}</title>\n</head>\n<body>\n"
                 f"<h1>{html.escape(c['title'])}</h1>\n"
-                f"{c.get('content_html') or '<p>(Không có nội dung)</p>'}\n"
+                f"{_normalize_xhtml_fragment(c.get('content_html') or '<p>(Không có nội dung)</p>')}\n"
                 "</body></html>"
             ).encode("utf-8")
             _epub_write(z, "OEBPS/" + fn, xhtml)
@@ -289,5 +315,5 @@ def create_epub(book_url: str,
         ).encode("utf-8")
         _epub_write(z, "OEBPS/toc.ncx", toc)
 
-    print(f"✅ HOÀN THÀNH! File EPUB: {out_path}\n")
+    _safe_print(f"HOAN THANH! File EPUB: {out_path}\n")
     return out_path

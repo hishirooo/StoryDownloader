@@ -1,0 +1,347 @@
+'''
+Tải truyện từ website https://www.czbooks.net/
+Ứng dụng sẽ:
+1. Nhận URL truyện từ người dùng.
+2. Tự động lấy thông tin truyện và bìa.
+3. Tải cover và chuyển đổi sang định dạng phù hợp cho EPUB.
+4. Tải truyện theo chương, lưu từng chương ngay khi tải xong.
+5. Lưu html chương dưới dạng chapter_xxxx.html trong Output\\Tên truyện\\
+6. Tạo file EPUB tại Output\\Tên truyện.epub
+'''
+
+import io
+import os
+import re
+import time
+import logging
+import requests
+from urllib.parse import urljoin
+from bs4 import BeautifulSoup, Comment
+try:
+    from PIL import Image
+except ImportError:
+    os.system('pip install Pillow')
+    from PIL import Image
+
+from epub_builder import create_epub
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9,vi;q=0.8',
+    'Accept-Encoding': 'gzip, deflate',
+    'Connection': 'keep-alive',
+}
+
+class CzbooksScraper:
+    def __init__(self, novel_url):
+        self.novel_url = novel_url.strip()
+        self.session = requests.Session()
+        self.session.headers.update(HEADERS)
+        self.novel_data = {
+            'title': None,
+            'author': None,
+            'description': None,
+            'cover_url': None,
+            'cover_bytes': None,
+            'cover_ext': '.jpg',
+        }
+        self.output_base = 'Output'
+        self.book_dir = None
+
+    @staticmethod
+    def _safe_filename(value: str) -> str:
+        if not value:
+            return 'Unknown'
+        value = re.sub(r'[\\/:*?"<>|]+', ' ', value)
+        value = re.sub(r'\s+', ' ', value).strip().rstrip('.')
+        return value or 'Unknown'
+
+    def _ensure_output_dir(self):
+        os.makedirs(self.output_base, exist_ok=True)
+        title_safe = self._safe_filename(self.novel_data['title'] or 'Unknown')
+        self.book_dir = os.path.join(self.output_base, title_safe)
+        os.makedirs(self.book_dir, exist_ok=True)
+        logging.info(f'Output directory: {self.book_dir}')
+
+    def _http_get(self, url, referer=None, retries=3, backoff=1.0):
+        headers = {}
+        if referer:
+            headers['Referer'] = referer
+
+        for attempt in range(1, retries + 1):
+            try:
+                response = self.session.get(url, headers=headers, timeout=20)
+                response.encoding = 'utf-8'
+                if response.status_code == 403 and attempt < retries:
+                    logging.warning(f'403 received for {url}; retrying {attempt}/{retries}...')
+                    time.sleep(backoff * attempt)
+                    if referer is None:
+                        headers['Referer'] = self.novel_url
+                    if attempt == 1 and self.novel_url:
+                        logging.info('Refreshing novel page cookies before retrying.')
+                        self.session.get(self.novel_url, timeout=20)
+                    continue
+                if response.status_code == 403 and attempt == retries:
+                    logging.warning(f'Final 403 for {url}; trying a fresh session fallback.')
+                    fresh_sess = requests.Session()
+                    fresh_sess.headers.update(HEADERS)
+                    if self.novel_url:
+                        fresh_sess.get(self.novel_url, timeout=20)
+                    fresh_resp = fresh_sess.get(url, headers=headers, timeout=20)
+                    if fresh_resp.status_code == 200:
+                        fresh_resp.encoding = 'utf-8'
+                        return fresh_resp
+                return response
+            except requests.RequestException as exc:
+                logging.warning(f'HTTP error for {url}: {exc}')
+                if attempt < retries:
+                    time.sleep(backoff)
+                    continue
+                return None
+        return None
+
+    def scrape_novel(self):
+        logging.info(f'Starting to scrape novel from {self.novel_url}')
+        response = self._http_get(self.novel_url)
+        if not response or response.status_code != 200:
+            raise RuntimeError(f'Failed to retrieve novel page. Status code: {getattr(response, "status_code", None)}')
+
+        response.encoding = 'utf-8'
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+        title_tag = soup.find('span', class_='title')
+        author_tag = soup.find('span', class_='author')
+        description_tag = soup.find('div', class_='description')
+        cover_img = soup.select_one('div.thumbnail img')
+
+        self.novel_data['title'] = title_tag.get_text(strip=True) if title_tag else 'Unknown Title'
+        self.novel_data['author'] = author_tag.get_text(' ', strip=True) if author_tag else 'Unknown Author'
+        self.novel_data['description'] = description_tag.get_text(' ', strip=True) if description_tag else ''
+        self.novel_data['cover_url'] = urljoin(self.novel_url, cover_img['src']) if cover_img and cover_img.get('src') else None
+
+        logging.info(f'Novel title: {self.novel_data["title"]}')
+        logging.info(f'Novel author: {self.novel_data["author"]}')
+        logging.info(f'Novel description: {self.novel_data["description"][:120]}...')
+        logging.info(f'Novel cover URL: {self.novel_data["cover_url"]}')
+
+        self._ensure_output_dir()
+        self.download_cover()
+
+    def download_cover(self):
+        cover_url = self.novel_data.get('cover_url')
+        if not cover_url:
+            logging.warning('No cover URL found; skipping cover download.')
+            return
+
+        logging.info(f'Downloading cover image from {cover_url}')
+        response = self.session.get(cover_url, timeout=20)
+        if response.status_code != 200:
+            logging.warning(f'Failed to download cover image. Status code: {response.status_code}')
+            return
+
+        try:
+            image = Image.open(io.BytesIO(response.content))
+            image = image.convert('RGB')
+            image.thumbnail((1200, 1600), Image.LANCZOS)
+            buffer = io.BytesIO()
+            image.save(buffer, format='JPEG', quality=85)
+            self.novel_data['cover_bytes'] = buffer.getvalue()
+            self.novel_data['cover_ext'] = '.jpg'
+
+            cover_path = os.path.join(self.book_dir, 'cover.jpg')
+            with open(cover_path, 'wb') as f:
+                f.write(self.novel_data['cover_bytes'])
+            logging.info(f'Cover saved to {cover_path}')
+        except Exception as exc:
+            logging.warning(f'Cover conversion failed: {exc}')
+
+    def get_list_chapters(self):
+        logging.info('Retrieving chapter list')
+        response = self._http_get(self.novel_url)
+        if not response or response.status_code != 200:
+            raise RuntimeError(f'Failed to retrieve novel page. Status code: {getattr(response, "status_code", None)}')
+
+        response.encoding = 'utf-8'
+        soup = BeautifulSoup(response.text, 'html.parser')
+        chapter_links = []
+
+        for a in soup.select('ul.nav.chapter-list a'):
+            href = a.get('href')
+            if not href:
+                continue
+            chapter_links.append({
+                'title': a.get_text(strip=True) or 'Chương',
+                'url': urljoin(self.novel_url, href)
+            })
+
+        if not chapter_links:
+            for a in soup.select('a'):
+                href = a.get('href')
+                if href and 'chapter' in href and a.get_text(strip=True):
+                    chapter_links.append({
+                        'title': a.get_text(strip=True),
+                        'url': urljoin(self.novel_url, href)
+                    })
+
+        unique = []
+        seen = set()
+        for item in chapter_links:
+            if item['url'] not in seen:
+                seen.add(item['url'])
+                unique.append(item)
+
+        logging.info(f'Found {len(unique)} chapters')
+        return unique
+
+    def _clean_content(self, content_node):
+        if not content_node:
+            return ''
+
+        for tag in content_node.find_all(['script', 'style', 'noscript', 'iframe', 'header', 'footer', 'form', 'button', 'input', 'textarea', 'svg', 'ads', 'aside']):
+            tag.decompose()
+
+        for comment in content_node.find_all(string=lambda text: isinstance(text, Comment)):
+            comment.extract()
+
+        for tag in content_node.find_all(True):
+            if tag.name not in {'div', 'p', 'br', 'strong', 'b', 'em', 'i', 'u', 'span', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'ul', 'ol', 'li'}:
+                tag.unwrap()
+            else:
+                tag.attrs = {}
+
+        for div in content_node.find_all('div'):
+            if not div.find(['div', 'p', 'ul', 'ol', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+                text = div.get_text(strip=True)
+                if text:
+                    div.name = 'p'
+                else:
+                    div.decompose()
+
+        return ''.join(str(child) for child in content_node.contents if str(child).strip())
+
+    def _wrap_html(self, title, content_html):
+        title_safe = self._safe_filename(title)
+        return (
+            '<!DOCTYPE html>\n'
+            '<html lang="vi">\n'
+            '<head>\n'
+            '  <meta charset="utf-8"/>\n'
+            f'  <title>{title_safe}</title>\n'
+            '</head>\n'
+            '<body>\n'
+            f'  <article id="chapter">\n'
+            f'    <h1>{title_safe}</h1>\n'
+            f'{content_html}\n'
+            '  </article>\n'
+            '</body>\n'
+            '</html>\n'
+        )
+
+    def save_chapter_file(self, index, chapter_title, content_html):
+        filename = f'chapter_{index:04d}.html'
+        path = os.path.join(self.book_dir, filename)
+        html_text = self._wrap_html(chapter_title, content_html)
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(html_text)
+        logging.info(f'Saved chapter file: {filename}')
+        return path
+
+    def get_content_chapter(self, chapter_url, fallback_title=None):
+        logging.info(f'Retrieving chapter: {chapter_url}')
+        response = self._http_get(chapter_url, referer=self.novel_url)
+        if not response or response.status_code != 200:
+            logging.warning(f'Failed to retrieve chapter page. Status code: {getattr(response, "status_code", None)}')
+            return None
+
+        response.encoding = 'utf-8'
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        
+        #<div class="name">《大鍋炒》夏夜暗湧2</div>
+        title_tag = soup.find('div', class_='name') or soup.find('h1')
+        title = title_tag.get_text(strip=True) if title_tag else fallback_title or 'Chương'
+        # <div class="content">幾乎在同一時間，三樓的另一間臥室裡。<br>
+        #     <br>
+        #     奶奶吳梅也還沒睡。她心裡惦記著孫子，白天看李秀赫好像有點累，就端了一杯溫牛奶上來。她敲了敲李秀赫的房門。<br>
+        #     <br>
+        #     「誰啊？」裡面傳來李秀赫渾厚的聲音。<br>
+        #     <br>
+        #     「秀赫啊，是奶奶，給你端杯牛奶。」<br>
+        content_node = soup.find('div', class_='content')
+        
+            
+        content_html = self._clean_content(content_node)
+        if not content_html:
+            paragraphs = [p.get_text(strip=True) for p in soup.find_all('p') if p.get_text(strip=True)]
+            content_html = ''.join(f'<p>{p}</p>' for p in paragraphs)
+
+        return {'title': title, 'content_html': content_html, 'url': chapter_url}
+
+    def download_all_chapters(self, chapters):
+        logging.info('Downloading chapters one by one')
+        chapters_data = []
+        for index, chapter in enumerate(chapters, start=1):
+            try:
+                chapter_data = self.get_content_chapter(chapter['url'], chapter['title'])
+                if not chapter_data or not chapter_data.get('content_html'):
+                    logging.warning(f'Chapter {index:04d} empty: {chapter["title"]}')
+                    time.sleep(1.0)
+                    continue
+                self.save_chapter_file(index, chapter_data['title'], chapter_data['content_html'])
+                chapters_data.append(chapter_data)
+            except Exception as exc:
+                logging.warning(f'Error downloading chapter {index:04d}: {exc}')
+            time.sleep(1.0)
+        return chapters_data
+
+    def build_epub(self, chapters, chapters_data):
+        epub_title = self.novel_data['title']
+        epub_author = self.novel_data['author']
+        epub_path = os.path.join(self.output_base, f'{self._safe_filename(epub_title)}.epub')
+
+        create_epub(
+            book_url=self.novel_url,
+            book_title=epub_title,
+            author=epub_author,
+            chapters=chapters,
+            chapters_data=chapters_data,
+            cover_bytes=self.novel_data.get('cover_bytes'),
+            cover_ext=self.novel_data.get('cover_ext', '.jpg'),
+            out_epub_path=epub_path,
+        )
+
+        logging.info(f'EPUB created: {epub_path}')
+        return epub_path
+
+    def run(self):
+        self.scrape_novel()
+        chapters = self.get_list_chapters()
+        if not chapters:
+            raise RuntimeError('Không tìm thấy chương nào để tải.')
+
+        chapter_data = self.download_all_chapters(chapters)
+        if not chapter_data:
+            raise RuntimeError('Không thể tải chương nào.')
+
+        self.build_epub(chapters, chapter_data)
+
+
+def main():
+    url = input('Nhập URL truyện CZBooks: ').strip()
+    if not url:
+        print('URL không được để trống.')
+        return
+
+    scraper = CzbooksScraper(url)
+    try:
+        scraper.run()
+    except Exception as exc:
+        logging.error(f'Đã xảy ra lỗi: {exc}')
+
+
+if __name__ == '__main__':
+    main()
+        
