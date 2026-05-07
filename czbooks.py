@@ -241,8 +241,11 @@ class CzbooksScraper:
         )
 
     def save_chapter_file(self, index, chapter_title, content_html):
-        filename = f'chapter_{index:04d}.html'
+        filename = f'{index:04d}.html'
         path = os.path.join(self.book_dir, filename)
+        if os.path.exists(path):
+            logging.info(f'HTML đã tồn tại, bỏ qua: {filename}')
+            return path
         html_text = self._wrap_html(chapter_title, content_html)
         with open(path, 'w', encoding='utf-8') as f:
             f.write(html_text)
@@ -282,8 +285,13 @@ class CzbooksScraper:
 
     def download_all_chapters(self, chapters):
         logging.info('Downloading chapters one by one')
-        chapters_data = []
         for index, chapter in enumerate(chapters, start=1):
+            # Kiểm tra HTML cache trước
+            filename = f'{index:04d}.html'
+            path = os.path.join(self.book_dir, filename)
+            if os.path.exists(path):
+                logging.info(f'HTML đã tồn tại, bỏ qua: {filename}')
+                continue
             try:
                 chapter_data = self.get_content_chapter(chapter['url'], chapter['title'])
                 if not chapter_data or not chapter_data.get('content_html'):
@@ -291,13 +299,15 @@ class CzbooksScraper:
                     time.sleep(1.0)
                     continue
                 self.save_chapter_file(index, chapter_data['title'], chapter_data['content_html'])
-                chapters_data.append(chapter_data)
             except Exception as exc:
                 logging.warning(f'Error downloading chapter {index:04d}: {exc}')
             time.sleep(1.0)
-        return chapters_data
 
-    def build_epub(self, chapters, chapters_data):
+    def _fetch_chapter_for_epub(self, chapter_url):
+        """Wrapper cho get_content_chapter để dùng làm fetch_fn cho epub_builder."""
+        return self.get_content_chapter(chapter_url)
+
+    def build_epub(self, chapters):
         epub_title = self.novel_data['title']
         epub_author = self.novel_data['author']
         epub_path = os.path.join(self.output_base, f'{self._safe_filename(epub_title)}.epub')
@@ -307,10 +317,12 @@ class CzbooksScraper:
             book_title=epub_title,
             author=epub_author,
             chapters=chapters,
-            chapters_data=chapters_data,
+            fetch_fn=self._fetch_chapter_for_epub,
             cover_bytes=self.novel_data.get('cover_bytes'),
             cover_ext=self.novel_data.get('cover_ext', '.jpg'),
+            language='zh',
             out_epub_path=epub_path,
+            html_cache_dir=self.book_dir,
         )
 
         logging.info(f'EPUB created: {epub_path}')
@@ -322,11 +334,8 @@ class CzbooksScraper:
         if not chapters:
             raise RuntimeError('Không tìm thấy chương nào để tải.')
 
-        chapter_data = self.download_all_chapters(chapters)
-        if not chapter_data:
-            raise RuntimeError('Không thể tải chương nào.')
-
-        self.build_epub(chapters, chapter_data)
+        self.download_all_chapters(chapters)
+        self.build_epub(chapters)
 
 
 def main():
