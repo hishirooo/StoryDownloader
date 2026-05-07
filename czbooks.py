@@ -12,8 +12,8 @@ Tải truyện từ website https://www.czbooks.net/
 import io
 import os
 import re
+import sys
 import time
-import logging
 import requests
 from urllib.parse import urljoin
 from bs4 import BeautifulSoup, Comment
@@ -25,7 +25,17 @@ except ImportError:
 
 from epub_builder import create_epub
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+def _print(msg: str) -> None:
+    """In thông báo an toàn (tránh lỗi encoding trên Windows console)."""
+    try:
+        sys.stdout.buffer.write((msg + '\n').encode('utf-8', errors='replace'))
+        sys.stdout.flush()
+    except Exception:
+        try:
+            print(msg)
+        except Exception:
+            pass
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
@@ -64,7 +74,7 @@ class CzbooksScraper:
         title_safe = self._safe_filename(self.novel_data['title'] or 'Unknown')
         self.book_dir = os.path.join(self.output_base, title_safe)
         os.makedirs(self.book_dir, exist_ok=True)
-        logging.info(f'Output directory: {self.book_dir}')
+        _print(f'📁 Thư mục lưu: {self.book_dir}')
 
     def _http_get(self, url, referer=None, retries=3, backoff=1.0):
         headers = {}
@@ -76,16 +86,15 @@ class CzbooksScraper:
                 response = self.session.get(url, headers=headers, timeout=20)
                 response.encoding = 'utf-8'
                 if response.status_code == 403 and attempt < retries:
-                    logging.warning(f'403 received for {url}; retrying {attempt}/{retries}...')
+                    _print(f'  ⚠ 403 - thử lại {attempt}/{retries}...')
                     time.sleep(backoff * attempt)
                     if referer is None:
                         headers['Referer'] = self.novel_url
                     if attempt == 1 and self.novel_url:
-                        logging.info('Refreshing novel page cookies before retrying.')
                         self.session.get(self.novel_url, timeout=20)
                     continue
                 if response.status_code == 403 and attempt == retries:
-                    logging.warning(f'Final 403 for {url}; trying a fresh session fallback.')
+                    _print(f'  ⚠ 403 cuối cùng, thử session mới...')
                     fresh_sess = requests.Session()
                     fresh_sess.headers.update(HEADERS)
                     if self.novel_url:
@@ -96,7 +105,7 @@ class CzbooksScraper:
                         return fresh_resp
                 return response
             except requests.RequestException as exc:
-                logging.warning(f'HTTP error for {url}: {exc}')
+                _print(f'  ✗ Lỗi HTTP: {exc}')
                 if attempt < retries:
                     time.sleep(backoff)
                     continue
@@ -104,10 +113,12 @@ class CzbooksScraper:
         return None
 
     def scrape_novel(self):
-        logging.info(f'Starting to scrape novel from {self.novel_url}')
+        _print(f'\n{"="*50}')
+        _print(f'📖 Đang lấy thông tin truyện...')
+        _print(f'{"="*50}')
         response = self._http_get(self.novel_url)
         if not response or response.status_code != 200:
-            raise RuntimeError(f'Failed to retrieve novel page. Status code: {getattr(response, "status_code", None)}')
+            raise RuntimeError(f'Không thể tải trang truyện. Status: {getattr(response, "status_code", None)}')
 
         response.encoding = 'utf-8'
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -122,10 +133,8 @@ class CzbooksScraper:
         self.novel_data['description'] = description_tag.get_text(' ', strip=True) if description_tag else ''
         self.novel_data['cover_url'] = urljoin(self.novel_url, cover_img['src']) if cover_img and cover_img.get('src') else None
 
-        logging.info(f'Novel title: {self.novel_data["title"]}')
-        logging.info(f'Novel author: {self.novel_data["author"]}')
-        logging.info(f'Novel description: {self.novel_data["description"][:120]}...')
-        logging.info(f'Novel cover URL: {self.novel_data["cover_url"]}')
+        _print(f'  Tiêu đề : {self.novel_data["title"]}')
+        _print(f'  Tác giả : {self.novel_data["author"]}')
 
         self._ensure_output_dir()
         self.download_cover()
@@ -133,13 +142,13 @@ class CzbooksScraper:
     def download_cover(self):
         cover_url = self.novel_data.get('cover_url')
         if not cover_url:
-            logging.warning('No cover URL found; skipping cover download.')
+            _print('  ⚠ Không tìm thấy URL bìa, bỏ qua.')
             return
 
-        logging.info(f'Downloading cover image from {cover_url}')
+        _print(f'🖼️ Đang tải bìa truyện...')
         response = self.session.get(cover_url, timeout=20)
         if response.status_code != 200:
-            logging.warning(f'Failed to download cover image. Status code: {response.status_code}')
+            _print(f'  ✗ Tải bìa thất bại (status {response.status_code})')
             return
 
         try:
@@ -154,12 +163,12 @@ class CzbooksScraper:
             cover_path = os.path.join(self.book_dir, 'cover.jpg')
             with open(cover_path, 'wb') as f:
                 f.write(self.novel_data['cover_bytes'])
-            logging.info(f'Cover saved to {cover_path}')
+            _print(f'  ✓ Đã lưu bìa: cover.jpg')
         except Exception as exc:
-            logging.warning(f'Cover conversion failed: {exc}')
+            _print(f'  ✗ Lỗi xử lý bìa: {exc}')
 
     def get_list_chapters(self):
-        logging.info('Retrieving chapter list')
+        _print(f'\n📋 Đang lấy danh sách chương...')
         response = self._http_get(self.novel_url)
         if not response or response.status_code != 200:
             raise RuntimeError(f'Failed to retrieve novel page. Status code: {getattr(response, "status_code", None)}')
@@ -193,7 +202,7 @@ class CzbooksScraper:
                 seen.add(item['url'])
                 unique.append(item)
 
-        logging.info(f'Found {len(unique)} chapters')
+        _print(f'  ✓ Tìm thấy {len(unique)} chương')
         return unique
 
     def _clean_content(self, content_node):
@@ -244,19 +253,16 @@ class CzbooksScraper:
         filename = f'{index:04d}.html'
         path = os.path.join(self.book_dir, filename)
         if os.path.exists(path):
-            logging.info(f'HTML đã tồn tại, bỏ qua: {filename}')
             return path
         html_text = self._wrap_html(chapter_title, content_html)
         with open(path, 'w', encoding='utf-8') as f:
             f.write(html_text)
-        logging.info(f'Saved chapter file: {filename}')
         return path
 
     def get_content_chapter(self, chapter_url, fallback_title=None):
-        logging.info(f'Retrieving chapter: {chapter_url}')
         response = self._http_get(chapter_url, referer=self.novel_url)
         if not response or response.status_code != 200:
-            logging.warning(f'Failed to retrieve chapter page. Status code: {getattr(response, "status_code", None)}')
+            _print(f'  ✗ Lỗi tải chương (status {getattr(response, "status_code", None)})')
             return None
 
         response.encoding = 'utf-8'
@@ -284,24 +290,37 @@ class CzbooksScraper:
         return {'title': title, 'content_html': content_html, 'url': chapter_url}
 
     def download_all_chapters(self, chapters):
-        logging.info('Downloading chapters one by one')
+        total = len(chapters)
+        cached = 0
+        downloaded = 0
+        failed = 0
+
+        _print(f'\n🚀 Bắt đầu tải {total} chương...')
+        _print(f'{"-"*50}')
+
         for index, chapter in enumerate(chapters, start=1):
-            # Kiểm tra HTML cache trước
             filename = f'{index:04d}.html'
             path = os.path.join(self.book_dir, filename)
             if os.path.exists(path):
-                logging.info(f'HTML đã tồn tại, bỏ qua: {filename}')
+                cached += 1
                 continue
             try:
                 chapter_data = self.get_content_chapter(chapter['url'], chapter['title'])
                 if not chapter_data or not chapter_data.get('content_html'):
-                    logging.warning(f'Chapter {index:04d} empty: {chapter["title"]}')
+                    _print(f'  [{index:04d}/{total}] ⚠ Trống: {chapter["title"]}')
+                    failed += 1
                     time.sleep(1.0)
                     continue
                 self.save_chapter_file(index, chapter_data['title'], chapter_data['content_html'])
+                downloaded += 1
+                _print(f'  [{index:04d}/{total}] ✓ {chapter_data["title"]}')
             except Exception as exc:
-                logging.warning(f'Error downloading chapter {index:04d}: {exc}')
+                failed += 1
+                _print(f'  [{index:04d}/{total}] ✗ Lỗi: {exc}')
             time.sleep(1.0)
+
+        _print(f'{"-"*50}')
+        _print(f'📊 Kết quả: {downloaded} tải mới | {cached} từ cache | {failed} lỗi')
 
     def _fetch_chapter_for_epub(self, chapter_url):
         """Wrapper cho get_content_chapter để dùng làm fetch_fn cho epub_builder."""
@@ -325,7 +344,7 @@ class CzbooksScraper:
             html_cache_dir=self.book_dir,
         )
 
-        logging.info(f'EPUB created: {epub_path}')
+        _print(f'\n✅ Đã tạo EPUB: {epub_path}')
         return epub_path
 
     def run(self):
@@ -348,7 +367,7 @@ def main():
     try:
         scraper.run()
     except Exception as exc:
-        logging.error(f'Đã xảy ra lỗi: {exc}')
+        _print(f'\n❌ Đã xảy ra lỗi: {exc}')
 
 
 if __name__ == '__main__':
