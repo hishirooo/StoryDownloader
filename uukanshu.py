@@ -33,8 +33,8 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 }
 TIMEOUT  = 20
-SLEEP_BETWEEN_PAGES = 2
-SLEEP_BETWEEN_CHAPS = 2
+SLEEP_BETWEEN_PAGES = 5
+SLEEP_BETWEEN_CHAPS = 5
 RETRY_STATUS = {429, 500, 502, 503, 504}
 EPUB_TARGET = "epub3"
 

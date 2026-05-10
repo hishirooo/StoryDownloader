@@ -227,28 +227,6 @@ def _get_chapter_content(soup: BeautifulSoup, url: str = "") -> Dict[str, str]:
     return all_content
 
 
-# def _get_all_content(chapters: List[Tuple[str, str]]) -> List[Dict[str, str]]:
-#     '''
-#     Duyệt qua tất cả chương, fetch và trích xuất nội dung.
-#     Return: List[{"title": str, "content_html": str}]
-    
-#     '''
-#     all_chapters_content = []
-#     for idx, (chap_title, chap_url) in enumerate(chapters, 1):
-#         print(f"Đang xử lý chương {idx}/{len(chapters)}: {chap_title}")
-#         try:
-#             chap_soup = _fetch_html(chap_url)
-#             chap_content = _get_chapter_content(chap_soup, url=chap_url)
-#             all_chapters_content.append({
-#                 "title": chap_title,
-#                 "content_html": chap_content
-#             })
-#             time.sleep(SLEEP_BETWEEN_CHAPS)
-#         except Exception as e:
-#             print(f"⚠ Lỗi xử lý chương {chap_title} ({chap_url}): {e}")
-#             continue
-#     return all_chapters_content
-
 def _save_file_content(filename: str, content: str):
     with open(filename, "w", encoding="utf-8") as f:
         f.write(content)
