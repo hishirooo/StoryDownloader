@@ -12,6 +12,7 @@ Trang chương mẫu:
 from __future__ import annotations
 
 from bs4 import BeautifulSoup
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
@@ -865,19 +866,21 @@ def build_epub(
     epub_path = OUTPUT_BASE / f"{_safe_filename(book_info['title'])}{suffix}.epub"
 
     _safe_print(f"[Epub] Đang tạo ebook: {epub_path}")
-    epub_builder.create_epub(
-        book_url=book_info.get("url", ""),
-        book_title=book_info.get("title", "Truyện"),
-        author=book_info.get("author", "Unknown"),
-        chapters=selected_chapters,
-        fetch_fn=fetch_chapter_content,
-        cover_bytes=cover_bytes,
-        cover_ext=cover_ext or ".jpg",
-        out_epub_path=str(epub_path),
-        html_cache_dir=str(book_dir),
-        chapters_data=chapters_data,
-        language="zh-CN",
-    )
+    noise = io.StringIO()
+    with redirect_stdout(noise):
+        epub_builder.create_epub(
+            book_url=book_info.get("url", ""),
+            book_title=book_info.get("title", "Truyện"),
+            author=book_info.get("author", "Unknown"),
+            chapters=selected_chapters,
+            fetch_fn=fetch_chapter_content,
+            cover_bytes=cover_bytes,
+            cover_ext=cover_ext or ".jpg",
+            out_epub_path=str(epub_path),
+            html_cache_dir=str(book_dir),
+            chapters_data=chapters_data,
+            language="zh-CN",
+        )
     _safe_print(f"[Epub] Đã tạo xong ebook: {epub_path}")
     return epub_path
 
@@ -895,43 +898,40 @@ def _ask_int(prompt: str, default: Optional[int] = None) -> int:
 
 def main() -> None:
     _safe_print("Downloader bxwx9.org / 笔下文学网")
-    raw_url = input(f"Nhập URL truyện [{DEFAULT_URL}]: ").strip()
+    raw_url = input(f"Nhập url [{DEFAULT_URL}]: ").strip()
     book_info, chapters, book_dir, cover_bytes, cover_ext = _prepare_book_context(raw_url or DEFAULT_URL)
 
     while True:
-        _safe_print("\n----------Menu----------")
-        _safe_print("[1] Tải truyện (All chapters, Build epub)")
-        _safe_print("[2] Tải truyện từ chương X đến chương Y (html, Build epub)")
-        _safe_print("[3] Tải chương X (html)")
-        _safe_print("[4] Tạo ebook từ truyện đã tải về")
-        _safe_print("[5] Nhập Url truyện mới")
-        _safe_print("[6] Thoát")
-        choice = input("Chọn: ").strip()
+        _safe_print("\n-----------------Menu-----------------")
+        _safe_print("[1] Tải toàn bộ (HTML + EPUB) - Default")
+        _safe_print("[2] Tải toàn bộ (HTML/TXT)")
+        _safe_print("[3] Tải từ chương X đến chương Y (HTML + EPUB)")
+        _safe_print("[4] Tạo EPUB từ cache hiện có")
+        _safe_print("[5] Nhập URL truyện mới")
+        _safe_print("[0] Thoát")
+        choice = input("Chọn [1]: ").strip() or "1"
 
         try:
             if choice == "1":
                 save_all_chapters_to_html(book_info["title"], chapters, str(book_dir))
-                save_txt_from_html(book_info, chapters, str(book_dir))
                 build_epub(book_info, chapters, book_dir, cover_bytes=cover_bytes, cover_ext=cover_ext)
             elif choice == "2":
+                save_all_chapters_to_html(book_info["title"], chapters, str(book_dir))
+                save_txt_from_html(book_info, chapters, str(book_dir))
+            elif choice == "3":
                 start = _ask_int("Chương bắt đầu: ")
                 end = _ask_int("Chương kết thúc: ", len(chapters))
                 save_all_chapters_to_html(book_info["title"], chapters, str(book_dir), start=start, end=end)
-                save_txt_from_html(book_info, chapters, str(book_dir), start=start, end=end)
                 build_epub(book_info, chapters, book_dir, start=start, end=end, cover_bytes=cover_bytes, cover_ext=cover_ext)
-            elif choice == "3":
-                idx = _ask_int("Chương cần tải: ")
-                start, end = _normalize_range(len(chapters), idx, idx)
-                save_all_chapters_to_html(book_info["title"], chapters, str(book_dir), start=start, end=end)
             elif choice == "4":
                 build_epub(book_info, chapters, book_dir, cover_bytes=cover_bytes, cover_ext=cover_ext)
             elif choice == "5":
-                raw_url = input("Nhập URL truyện mới: ").strip()
+                raw_url = input("Nhập url mới: ").strip()
                 if not raw_url:
                     _safe_print("URL trống, giữ nguyên truyện hiện tại.")
                     continue
                 book_info, chapters, book_dir, cover_bytes, cover_ext = _prepare_book_context(raw_url)
-            elif choice == "6" or choice == "":
+            elif choice == "0":
                 break
             else:
                 _safe_print("Lựa chọn không hợp lệ.")

@@ -1,26 +1,28 @@
 # -*- coding: utf-8 -*-
 """
-Downloader cho https://uukanshu.cc/.
+Downloader cho https://www.balshuzhal.cc/ (百书斋).
 
 Trang mục lục mẫu:
-  https://uukanshu.cc/book/26782/
+  https://www.balshuzhal.cc/ibook/78540/78540008/
 
 Trang chương mẫu:
-  https://uukanshu.cc/book/26782/17359573.html
+  https://www.balshuzhal.cc/ibook/78540/78540008/28361328.html
 """
 
 from __future__ import annotations
 
 from bs4 import BeautifulSoup
-from contextlib import redirect_stdout
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
+from uuid import uuid4
 import html
 import io
 import re
 import sys
 import time
+import zipfile
 
 try:
     from curl_cffi import requests as http_requests
@@ -36,8 +38,8 @@ except ImportError:
     HAS_PILLOW = False
 
 
-BASE_URL = "https://uukanshu.cc/"
-DEFAULT_URL = "https://uukanshu.cc/book/26782/"
+BASE_URL = "https://www.balshuzhal.cc/"
+DEFAULT_URL = "https://www.balshuzhal.cc/ibook/78540/78540008/"
 OUTPUT_BASE = Path("output")
 
 HEADERS = {
@@ -47,17 +49,13 @@ HEADERS = {
         "Chrome/124.0.0.0 Safari/537.36"
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "zh-TW,zh;q=0.9,zh-CN;q=0.8,vi;q=0.7,en;q=0.6",
-    "Cache-Control": "no-cache",
-    "Pragma": "no-cache",
-    "Upgrade-Insecure-Requests": "1",
+    "Accept-Language": "zh-CN,zh;q=0.9,vi;q=0.8,en;q=0.7",
     "Referer": BASE_URL,
 }
 
 TIMEOUT = 25
 SLEEP_BETWEEN_PAGES = 0.8
 SLEEP_BETWEEN_CHAPS = 1.0
-CHAPTER_RETRIES = 5
 RETRY_STATUS = {403, 429, 500, 502, 503, 504}
 MAX_COVER_SIZE = (1600, 2400)
 
@@ -79,7 +77,8 @@ def _text(el) -> str:
 
 def _clean_spaces(value: str) -> str:
     value = html.unescape(value or "")
-    value = value.replace("\xa0", " ").replace("\u3000", " ")
+    value = value.replace("\xa0", " ")
+    value = value.replace("\u3000", " ")
     return re.sub(r"\s+", " ", value).strip()
 
 
@@ -104,8 +103,6 @@ def _ensure_url(url: str) -> str:
 
 def _absolute_url(page_url: str, href: str) -> str:
     href = (href or "").strip()
-    if not href:
-        return page_url
     if href.startswith("//"):
         return f"{urlparse(page_url).scheme or 'https'}:{href}"
     return urljoin(page_url, href)
@@ -150,14 +147,11 @@ def _detect_encoding(content: bytes, response=None) -> str:
     if match:
         candidates.append(match.group(1))
 
-    encoding = getattr(response, "encoding", None) if response is not None else None
     apparent = getattr(response, "apparent_encoding", None) if response is not None else None
-    if encoding:
-        candidates.append(encoding)
     if apparent:
         candidates.append(apparent)
 
-    candidates.extend(["utf-8", "big5", "gb18030", "gbk"])
+    candidates.extend(["gb18030", "gbk", "utf-8"])
     for encoding in candidates:
         if not encoding:
             continue
@@ -169,7 +163,7 @@ def _detect_encoding(content: bytes, response=None) -> str:
             return encoding
         except Exception:
             continue
-    return "utf-8"
+    return "gb18030"
 
 
 def _decode_html(content: bytes, response=None) -> str:
@@ -182,13 +176,7 @@ class FetchHtmlError(RuntimeError):
         self.status_code = status_code
 
 
-def _fetch_html_with_status(
-    url: str,
-    tries: int = 3,
-    backoff: float = 0.8,
-    *,
-    referer: Optional[str] = None,
-) -> Tuple[BeautifulSoup, int]:
+def _fetch_html_with_status(url: str, tries: int = 3, backoff: float = 0.8) -> Tuple[BeautifulSoup, int]:
     last_error: Optional[Exception] = None
     last_status: Optional[int] = None
 
@@ -196,7 +184,7 @@ def _fetch_html_with_status(
         if attempt > 1:
             time.sleep(backoff * attempt)
         try:
-            response = _http_get(url, referer=referer)
+            response = _http_get(url)
             status_code = getattr(response, "status_code", 200)
             last_status = status_code
             if status_code in RETRY_STATUS and attempt < tries:
@@ -205,7 +193,7 @@ def _fetch_html_with_status(
             content = getattr(response, "content", b"")
             if not content:
                 text = getattr(response, "text", "")
-                content = text.encode(getattr(response, "encoding", "utf-8") or "utf-8", errors="replace")
+                content = text.encode(getattr(response, "encoding", "gb18030") or "gb18030", errors="replace")
             return BeautifulSoup(_decode_html(content, response), "html.parser"), status_code
         except Exception as exc:
             last_error = exc
@@ -218,55 +206,72 @@ def _fetch_html_with_status(
     raise FetchHtmlError(f"Không tải được HTML: {url} ({last_error})", last_status)
 
 
-def _fetch_html(url: str, tries: int = 3, backoff: float = 0.8, *, referer: Optional[str] = None) -> BeautifulSoup:
-    soup, _ = _fetch_html_with_status(url, tries=tries, backoff=backoff, referer=referer)
+def _fetch_html(url: str, tries: int = 3, backoff: float = 0.8) -> BeautifulSoup:
+    soup, _ = _fetch_html_with_status(url, tries=tries, backoff=backoff)
     return soup
+
+
+def _read_local_html(path: str | Path) -> BeautifulSoup:
+    content = Path(path).read_bytes()
+    return BeautifulSoup(_decode_html(content), "html.parser")
 
 
 def _get_book_info(soup: BeautifulSoup, page_url: str = DEFAULT_URL) -> Dict[str, str]:
     title = (
         _meta_content(soup, "og:novel:book_name", "og:title")
-        or _text(soup.find("h1", class_="booktitle"))
-        or _text(soup.select_one(".booktitle"))
+        or _text(soup.select_one("#info h1"))
         or _text(soup.find("h1"))
     )
     if not title:
         title_tag = _text(soup.find("title"))
-        title = re.split(r"_|UU看書|UU看书|最新章節|最新章节", title_tag, maxsplit=1)[0].strip()
+        title = re.split(r"最新章节|无弹窗|,|-", title_tag, maxsplit=1)[0].strip()
 
     author = _meta_content(soup, "og:novel:author")
-    page_lines = soup.get_text("\n", strip=True)
-    if not author:
-        match = re.search(r"(?:作者|作\s*者)\s*[:：]\s*([^\n]+)", page_lines)
-        if match:
-            author = _clean_spaces(match.group(1))
-
-    category = _meta_content(soup, "og:novel:category")
-    marker = soup.find("span", class_="blue")
-    if not category and marker:
-        next_span = marker.find_next("span")
-        if next_span:
-            category = _text(next_span)
-
     status = _meta_content(soup, "og:novel:status")
     update_time = _meta_content(soup, "og:novel:update_time")
+    category = _meta_content(soup, "og:novel:category")
     latest_chapter = _meta_content(soup, "og:novel:latest_chapter_name")
     latest_url = _meta_content(soup, "og:novel:latest_chapter_url")
-    if latest_url:
-        latest_url = _absolute_url(page_url, latest_url)
 
-    intro = _meta_content(soup, "og:description", "description")
-    intro_node = soup.find("p", class_="bookintro") or soup.select_one(".bookintro, #bookintro, .intro")
-    if intro_node:
-        intro = _clean_spaces(intro_node.get_text("\n", strip=True))
+    info_node = soup.select_one("#info")
+    if info_node:
+        for p in info_node.find_all("p"):
+            line = _clean_spaces(p.get_text(" ", strip=True))
+            if not author and "作者" in line:
+                author = _clean_spaces(line.split("：", 1)[-1])
+            elif not status and "状态" in line:
+                status = _clean_spaces(line.split("：", 1)[-1].split(" ", 1)[0])
+            elif not update_time and "最后更新" in line:
+                update_time = _clean_spaces(line.split("：", 1)[-1])
+            elif not latest_chapter and "最新章节" in line:
+                latest_chapter = _clean_spaces(line.split("：", 1)[-1])
+                link = p.find("a", href=True)
+                if link:
+                    latest_url = _absolute_url(page_url, link["href"])
 
     cover_url = _meta_content(soup, "og:image")
     if not cover_url:
-        img = soup.find("img", class_="thumbnail") or soup.select_one(".book img[src], img.thumbnail[src]")
+        img = soup.select_one("#fmimg img[src]") or soup.select_one("#sidebar img[src]") or soup.find("img", src=True)
         if img:
-            cover_url = img.get("src", "").strip()
+            src = img.get("src", "").strip()
+            if src and not src.startswith("data:"):
+                cover_url = src
     if cover_url:
         cover_url = _absolute_url(page_url, cover_url)
+
+    intro = _meta_content(soup, "og:description")
+    intro_node = soup.select_one("#intro")
+    if intro_node:
+        intro_clone = BeautifulSoup(str(intro_node), "html.parser")
+        for node in intro_clone.find_all(["script", "style"]):
+            node.decompose()
+        intro_text = intro_clone.get_text("\n", strip=True)
+        intro_text = re.sub(r"各位书友要是觉得.*$", "", intro_text, flags=re.S).strip()
+        if intro_text:
+            intro = _clean_spaces(intro_text)
+
+    if latest_url:
+        latest_url = _absolute_url(page_url, latest_url)
 
     return {
         "title": title or "Unknown",
@@ -282,81 +287,88 @@ def _get_book_info(soup: BeautifulSoup, page_url: str = DEFAULT_URL) -> Dict[str
     }
 
 
-def _book_id_from_url(url: str) -> Optional[str]:
-    match = re.search(r"/book/(\d+)/", urlparse(url).path + "/")
-    return match.group(1) if match else None
+def _chapter_number(title: str) -> Optional[int]:
+    match = re.search(r"第\s*(\d+)\s*章", title or "")
+    if match:
+        return int(match.group(1))
+    return None
 
 
-def _is_chapter_url(page_url: str, chapter_url: str) -> bool:
+def _is_chapter_url(page_url: str, url: str) -> bool:
     page = urlparse(page_url)
-    target = urlparse(chapter_url)
-    if target.netloc and target.netloc != page.netloc:
+    parsed = urlparse(url)
+    if parsed.netloc and parsed.netloc != page.netloc:
         return False
-    if not re.fullmatch(r"/book/\d+/\d+\.html?", target.path, flags=re.I):
+    if not re.search(r"\.html?$", parsed.path, flags=re.I):
         return False
 
-    page_book_id = _book_id_from_url(page_url)
-    target_book_id = _book_id_from_url(chapter_url)
-    return not page_book_id or page_book_id == target_book_id
+    page_dir = page.path if page.path.endswith("/") else page.path.rsplit("/", 1)[0] + "/"
+    if not parsed.path.startswith(page_dir):
+        return False
+    return re.fullmatch(r"\d+\.html?", parsed.path.rsplit("/", 1)[-1], flags=re.I) is not None
 
 
 def _get_list_chapters(soup: BeautifulSoup, page_url: str) -> List[Dict[str, str]]:
-    containers = [
-        node for node in [
-            soup.find("div", id="list-chapterAll"),
-            soup.select_one("#list-chapterAll"),
-            soup.select_one(".list-chapterAll"),
-            soup.select_one(".chapter-list"),
-            soup.select_one(".listmain"),
-        ]
-        if node is not None
-    ]
-    if not containers:
-        containers = [soup]
+    list_root = soup.select_one(".listmain dl") or soup.select_one(".listmain")
+    if not list_root:
+        list_root = soup
 
     chapters: List[Dict[str, str]] = []
     seen: set[str] = set()
-    for container in containers:
-        for a in container.find_all("a", href=True):
+    in_main_volume = False
+    found_volume_header = False
+
+    for node in list_root.find_all(["dt", "dd"], recursive=False):
+        if node.name == "dt":
+            dt_text = _clean_spaces(_text(node))
+            if any(marker in dt_text for marker in ("正文", "章节", "卷")) and "最新" not in dt_text:
+                in_main_volume = True
+                found_volume_header = True
+            elif "最新" in dt_text and not found_volume_header:
+                in_main_volume = False
+            continue
+
+        if found_volume_header and not in_main_volume:
+            continue
+
+        link = node.find("a", href=True)
+        if not link:
+            continue
+        title = _clean_spaces(_text(link))
+        full_url = _absolute_url(page_url, link["href"])
+        if not title or not _is_chapter_url(page_url, full_url):
+            continue
+        if full_url in seen:
+            continue
+        seen.add(full_url)
+        chapters.append({"title": title, "url": full_url})
+
+    if not chapters:
+        for a in list_root.find_all("a", href=True):
             title = _clean_spaces(_text(a))
-            url = _absolute_url(page_url, a.get("href", ""))
-            if not title or not _is_chapter_url(page_url, url):
+            full_url = _absolute_url(page_url, a["href"])
+            if not title or not _is_chapter_url(page_url, full_url) or full_url in seen:
                 continue
-            if url in seen:
-                continue
-            seen.add(url)
-            chapters.append({"title": title, "url": url})
+            seen.add(full_url)
+            chapters.append({"title": title, "url": full_url})
+
+    # Nếu chỉ lấy được block mới nhất, sort theo số chương để trả về thứ tự đọc tự nhiên.
+    if chapters and all(_chapter_number(chapter["title"]) is not None for chapter in chapters):
+        chapters.sort(key=lambda chapter: _chapter_number(chapter["title"]) or 0)
 
     return chapters
 
 
 def _find_catalog_url_from_chapter(soup: BeautifulSoup, chapter_url: str) -> Optional[str]:
-    parsed = urlparse(chapter_url)
-    match = re.match(r"(?P<book_dir>/book/\d+)/\d+\.html?$", parsed.path, flags=re.I)
-    if match:
-        return f"{parsed.scheme or 'https'}://{parsed.netloc}{match.group('book_dir')}/"
+    index_match = re.search(r'var\s+index_page\s*=\s*["\']([^"\']+)["\']', str(soup), flags=re.I)
+    if index_match:
+        return _absolute_url(chapter_url, index_match.group(1))
 
-    for a in soup.select("a[href]"):
+    for a in soup.select(".page_chapter a[href], .path a[href], a[href]"):
         text = _clean_spaces(_text(a))
-        if text in {"目錄", "目录", "返回目錄", "返回目录"} or "目錄" in text or "目录" in text:
+        if text in {"返回目录", "目录"} or "目录" in text:
             return _absolute_url(chapter_url, a.get("href", ""))
     return None
-
-
-def _chapter_referer(url: str) -> str:
-    parsed = urlparse(url)
-    match = re.match(r"(?P<book_dir>/book/\d+)/\d+\.html?$", parsed.path, flags=re.I)
-    if match:
-        return f"{parsed.scheme or 'https'}://{parsed.netloc}{match.group('book_dir')}/"
-    return BASE_URL
-
-
-def _retry_delay_seconds(status_code: Optional[int], attempt: int) -> float:
-    if status_code == 403:
-        return min(14.0, 4.0 + attempt * 2.0)
-    if status_code == 429:
-        return min(20.0, 5.0 * attempt)
-    return max(SLEEP_BETWEEN_CHAPS, 1.5 * attempt)
 
 
 def getText(url: str) -> Dict:
@@ -389,30 +401,32 @@ def getText(url: str) -> Dict:
 
 
 def _chapter_title_from_page(soup: BeautifulSoup, book_title: str = "", fallback: str = "") -> str:
-    title = _text(soup.select_one(".readtitle h1") or soup.select_one(".chapter-title") or soup.find("h1"))
+    title = _text(soup.select_one(".content h1") or soup.find("h1"))
     if not title:
         title_tag = _text(soup.find("title"))
-        parts = [part.strip() for part in re.split(r"[_\-]", title_tag) if part.strip()]
-        if parts:
-            title = parts[0]
+        if title_tag:
+            parts = [part.strip() for part in title_tag.split("-") if part.strip()]
+            if len(parts) >= 2:
+                title = parts[1]
 
     title = _clean_spaces(title)
     if book_title and title.startswith(book_title):
-        title = title[len(book_title):].strip(" -_:：")
-    title = re.sub(r"\s*[-_]?.*?UU看書.*$", "", title, flags=re.I).strip(" -_:：")
-    title = re.sub(r"\s*[-_]?.*?UU看书.*$", "", title, flags=re.I).strip(" -_:：")
+        title = title[len(book_title):].strip(" -:：")
+    title = re.sub(r"\s*-?\s*无弹窗.*$", "", title).strip(" -:：")
+    title = re.sub(r"\s*-?\s*百书斋.*$", "", title).strip(" -:：")
     return title or fallback or "Chương"
 
 
-def _clean_chapter_lines(raw_text: str, title: str = "") -> List[str]:
+def _clean_chapter_text(raw_text: str, title: str = "") -> List[str]:
     raw_text = html.unescape(raw_text or "")
-    raw_text = raw_text.replace("\xa0", " ").replace("\u3000", " ")
+    raw_text = raw_text.replace("\xa0", " ")
+    raw_text = raw_text.replace("\u3000", " ")
     raw_text = raw_text.replace("\r\n", "\n").replace("\r", "\n")
 
     trash_patterns = re.compile(
-        r"(UU看書|UU看书|uukanshu\.cc|www\.uukanshu|上一章|下一章|返回目錄|返回目录|目錄|目录|"
-        r"加入書架|加入书架|書籤|书签|廣告|广告|手機版|手机版|电脑版|本書首發|本书首发|"
-        r"本站|版權|版权|Copyright|loadAdv|chaptererror|posterror)",
+        r"(百书斋|balshuzhal\.cc|m\.balshuzhal\.cc|www\.balshuzhal\.cc|上一章|下一章|返回目录|"
+        r"加入书签|章节错误|点击举报|举报后请耐心等待|手机站|手机版阅读|推荐阅读|小说相关推荐|"
+        r"Copyright|All Rights Reserved|app2|read2|read3|chaptererror|posterror)",
         flags=re.I,
     )
 
@@ -427,26 +441,15 @@ def _clean_chapter_lines(raw_text: str, title: str = "") -> List[str]:
             continue
         if re.fullmatch(r"\(?https?://[^\s)]+\)?", line, flags=re.I):
             continue
-        if len(line) < 2:
-            continue
-        if len(line) < 10 and not re.search(r"[a-zA-Z0-9\u4e00-\u9fff]", line):
-            continue
         paragraphs.append(line)
     return paragraphs
 
 
 def _get_chapter_content_html(soup: BeautifulSoup, title: str = "") -> str:
-    content = (
-        soup.select_one("div.readcotent.bbb.font-normal")
-        or soup.select_one(".readcotent")
-        or soup.select_one(".readcontent")
-        or soup.select_one(".read-content")
-        or soup.select_one("#content")
-        or soup.select_one("article")
-    )
+    content = soup.select_one("#content.showtxt") or soup.select_one("#content") or soup.select_one(".showtxt")
     if not content:
         candidates = [
-            node for node in soup.select(".content, .chapter-content, .reader, .book-content")
+            node for node in soup.select(".content, article, .reader")
             if len(_clean_spaces(node.get_text(" ", strip=True))) > 120
         ]
         content = max(candidates, key=lambda node: len(_clean_spaces(node.get_text(" ", strip=True)))) if candidates else None
@@ -454,14 +457,19 @@ def _get_chapter_content_html(soup: BeautifulSoup, title: str = "") -> str:
         return "<p>(Không có nội dung)</p>"
 
     content = BeautifulSoup(str(content), "html.parser")
-    for node in content.find_all(["script", "style", "ins", "iframe", "select", "input"]):
+    root = content.select_one("#content") or content
+    for node in root.find_all(["script", "style", "ins", "iframe", "select", "input"]):
         node.decompose()
-    for node in content.select(".ads, .ad, .readad, .chapter-nav, .pager, .page"):
+    for node in root.select(".link, .page_chapter, #page_set"):
         node.decompose()
-    for br in content.find_all("br"):
+    for report in root.find_all("div"):
+        if "章节错误" in _text(report) or "点击举报" in _text(report):
+            report.decompose()
+
+    for br in root.find_all("br"):
         br.replace_with("\n")
 
-    paragraphs = _clean_chapter_lines(content.get_text("\n", strip=False), title=title)
+    paragraphs = _clean_chapter_text(root.get_text("\n", strip=False), title=title)
     if not paragraphs:
         return "<p>(Không có nội dung)</p>"
     return "\n".join(f"<p>{html.escape(paragraph)}</p>" for paragraph in paragraphs)
@@ -469,7 +477,7 @@ def _get_chapter_content_html(soup: BeautifulSoup, title: str = "") -> str:
 
 def fetch_chapter_content(
     url: str,
-    retries: int = CHAPTER_RETRIES,
+    retries: int = 3,
     *,
     fallback_title: str = "",
     book_title: str = "",
@@ -477,7 +485,7 @@ def fetch_chapter_content(
     last_status: Optional[int] = None
     for attempt in range(1, retries + 1):
         try:
-            soup, status_code = _fetch_html_with_status(url, tries=1, referer=_chapter_referer(url))
+            soup, status_code = _fetch_html_with_status(url)
             last_status = status_code
             title = _chapter_title_from_page(soup, book_title=book_title, fallback=fallback_title)
             content_html = _get_chapter_content_html(soup, title=title)
@@ -493,10 +501,10 @@ def fetch_chapter_content(
         except FetchHtmlError as exc:
             last_status = exc.status_code
             if attempt < retries:
-                time.sleep(_retry_delay_seconds(last_status, attempt))
+                time.sleep(SLEEP_BETWEEN_CHAPS * attempt)
         except Exception:
             if attempt < retries:
-                time.sleep(_retry_delay_seconds(last_status, attempt))
+                time.sleep(SLEEP_BETWEEN_CHAPS * attempt)
 
     return {
         "title": fallback_title or "Chương lỗi",
@@ -517,7 +525,7 @@ def _chapter_html_doc(title: str, content_html: str, source_url: str = "") -> st
 </head>
 <body>
   <h1>{html.escape(title)}</h1>
-  <article class="chapter">
+  <article class="chapter-content">
 {content_html}
   </article>
   {source}
@@ -529,132 +537,72 @@ def _chapter_html_doc(title: str, content_html: str, source_url: str = "") -> st
 def _read_cached_chapter(html_path: Path) -> Dict[str, str]:
     soup = BeautifulSoup(html_path.read_text(encoding="utf-8"), "html.parser")
     title = _text(soup.find("h1")) or _text(soup.find("title")) or html_path.stem
-    article = soup.select_one("article.chapter") or soup.select_one("article") or soup.find("body") or soup
-    article = BeautifulSoup(str(article), "html.parser")
+    article = soup.select_one("article.chapter-content") or soup.select_one("article") or soup.find("body") or soup
     for node in article.select(".source"):
         node.decompose()
-    for h1 in article.find_all("h1"):
-        h1.decompose()
-    content_html = "\n".join(str(child) for child in article.contents).strip()
-    if not content_html:
-        content_html = "<p>(Không có nội dung)</p>"
-    text = BeautifulSoup(content_html, "html.parser").get_text("\n", strip=True)
-    status_code = "ERR_CACHE" if _looks_like_failed_content(text) else "CACHE"
     return {
         "title": title,
-        "content_html": content_html,
-        "text": text,
+        "content_html": "\n".join(str(child) for child in article.contents).strip(),
         "url": str(html_path),
-        "status_code": status_code,
+        "status_code": "CACHE",
     }
 
 
-def _chapter_html_path(book_dir: str | Path, idx: int) -> Path:
-    return Path(book_dir) / "html" / f"{idx:04d}.html"
+def _chapter_html_path(book_dir: Path, idx: int) -> Path:
+    return book_dir / f"chapter_{idx:04d}.html"
 
 
-def _chapter_export_path(book_dir: str | Path, idx: int, title: str) -> Path:
-    return Path(book_dir) / f"{idx:04d} - {_safe_filename(title, 90)}.html"
+def _legacy_chapter_html_path(book_dir: Path, idx: int) -> Path:
+    return book_dir / "html" / f"{idx:04d}.html"
 
 
-def _find_cached_chapter_path(book_dir: str | Path, idx: int) -> Optional[Path]:
-    directory = Path(book_dir)
-    for pattern in (f"{idx:04d} - *.html", f"{idx:04d}.html", f"chapter_{idx:04d}.html"):
-        matches = sorted(directory.glob(pattern))
+def _find_cached_chapter_path(book_dir: Path, idx: int) -> Optional[Path]:
+    for path in (_chapter_html_path(book_dir, idx), _legacy_chapter_html_path(book_dir, idx)):
+        if path.exists():
+            return path
+    for pattern in (f"{idx:04d} - *.html", f"{idx:04d}.html"):
+        matches = sorted(book_dir.glob(pattern))
         if matches:
             return matches[0]
-
-    html_dir = directory / "html"
-    if html_dir.is_dir():
-        for pattern in (f"{idx:04d}.html", f"{idx:04d} - *.html", f"chapter_{idx:04d}.html"):
-            matches = sorted(html_dir.glob(pattern))
-            if matches:
-                return matches[0]
     return None
 
 
-def _looks_like_failed_content(text: str) -> bool:
-    normalized = _clean_spaces(text)
-    return any(
-        marker in normalized
-        for marker in (
-            "Không tải được nội dung",
-            "Nội dung không tải được",
-            "Không có nội dung",
-        )
-    )
-
-
-def _is_failed_chapter_data(data: Dict[str, str]) -> bool:
-    status = data.get("status_code")
-    if isinstance(status, int) and status >= 400:
-        return True
-    if status in {"ERR", "ERR_CACHE"}:
-        return True
-    text = data.get("text") or BeautifulSoup(data.get("content_html", ""), "html.parser").get_text("\n", strip=True)
-    return _looks_like_failed_content(text)
-
-
-def _cached_file_is_failed(path: Path) -> bool:
-    try:
-        return _is_failed_chapter_data(_read_cached_chapter(path))
-    except Exception:
-        return True
-
-
-def _save_chapter_txt(data: Dict[str, str], txt_path: Path) -> None:
-    soup = BeautifulSoup(data.get("content_html", ""), "html.parser")
-    text = data.get("text") or soup.get_text("\n", strip=True)
-    txt_path.write_text(f"{data.get('title', txt_path.stem)}\n\n{text}\n", encoding="utf-8")
-
-
-def _write_export_html(data: Dict[str, str], book_dir: Path, idx: int, source_url: str = "") -> Path:
-    export_path = _chapter_export_path(book_dir, idx, data.get("title") or f"Chương {idx}")
-    if not export_path.exists() or _cached_file_is_failed(export_path):
-        export_path.write_text(
-            _chapter_html_doc(data["title"], data["content_html"], data.get("url") or source_url),
-            encoding="utf-8",
-        )
-    return export_path
+def _save_chapter_txt(chapter_data: Dict[str, str], txt_path: Path) -> None:
+    soup = BeautifulSoup(chapter_data.get("content_html", ""), "html.parser")
+    text = chapter_data.get("text") or soup.get_text("\n", strip=True)
+    txt_path.write_text(f"{chapter_data['title']}\n\n{text}\n", encoding="utf-8")
 
 
 def _save_chapter_html(
     chapter: Dict[str, str],
     idx: int,
-    book_dir: str | Path,
+    book_dir: Path,
     *,
     book_title: str = "",
     force: bool = False,
 ) -> Dict[str, str]:
-    out_path = Path(book_dir)
-    html_dir = out_path / "html"
-    html_dir.mkdir(parents=True, exist_ok=True)
-    html_path = _chapter_html_path(out_path, idx)
+    book_dir.mkdir(parents=True, exist_ok=True)
+    txt_dir = book_dir / "txt"
+    txt_dir.mkdir(parents=True, exist_ok=True)
 
-    cached_path = _find_cached_chapter_path(out_path, idx)
+    html_path = _chapter_html_path(book_dir, idx)
+    txt_path = txt_dir / f"{idx:04d}.txt"
+    cached_path = _find_cached_chapter_path(book_dir, idx)
     if cached_path and not force:
         data = _read_cached_chapter(cached_path)
-        if not _is_failed_chapter_data(data):
-            if cached_path != html_path and not html_path.exists():
-                html_path.write_text(
-                    _chapter_html_doc(data["title"], data["content_html"], data.get("url", chapter["url"])),
-                    encoding="utf-8",
-                )
-            return data
+        if cached_path != html_path:
+            html_path.write_text(cached_path.read_text(encoding="utf-8"), encoding="utf-8")
+        if not txt_path.exists():
+            _save_chapter_txt(data, txt_path)
+        return data
 
     data = fetch_chapter_content(
         chapter["url"],
         fallback_title=chapter.get("title", f"Chương {idx}"),
         book_title=book_title,
     )
-    if not _is_failed_chapter_data(data):
-        html_path.write_text(_chapter_html_doc(data["title"], data["content_html"], data["url"]), encoding="utf-8")
-        data["html_path"] = str(html_path)
-    elif html_path.exists() and _cached_file_is_failed(html_path):
-        try:
-            html_path.unlink()
-        except OSError:
-            pass
+    html_path.write_text(_chapter_html_doc(data["title"], data["content_html"], data["url"]), encoding="utf-8")
+    _save_chapter_txt(data, txt_path)
     return data
 
 
@@ -673,28 +621,24 @@ def _status_label(status) -> str:
         return "CACHE"
     if status == 200:
         return "\033[32mHTTP=200\033[0m"
-    if isinstance(status, int):
-        return f"\033[31mHTTP={status}\033[0m" if status >= 400 else f"HTTP={status}"
+    if isinstance(status, int) and status >= 400:
+        return f"\033[31mHTTP={status}\033[0m"
     return f"HTTP={status}"
 
 
 def download_chapters(
     book_info: Dict[str, str],
     chapters: List[Dict[str, str]],
-    book_dir: str | Path,
+    book_dir: Path,
     *,
     start: int = 1,
     end: Optional[int] = None,
     force: bool = False,
 ) -> List[Dict[str, str]]:
-    book_dir = Path(book_dir)
-    book_dir.mkdir(parents=True, exist_ok=True)
     start, end = _normalize_range(len(chapters), start, end)
-    selected_total = end - start + 1
+    total_selected = end - start + 1
+    _safe_print(f"Bắt đầu tải/cache {total_selected} chương vào: {book_dir}")
     downloaded: List[Dict[str, str]] = []
-    failures: List[Tuple[int, object]] = []
-
-    _safe_print(f"Bắt đầu tải/cache {selected_total} chương vào: {book_dir}")
     for done, idx in enumerate(range(start, end + 1), 1):
         chapter = chapters[idx - 1]
         data = _save_chapter_html(
@@ -704,21 +648,10 @@ def download_chapters(
             book_title=book_info.get("title", ""),
             force=force,
         )
-        if _is_failed_chapter_data(data):
-            failures.append((idx, data.get("status_code", "ERR")))
-        else:
-            _write_export_html(data, book_dir, idx, chapter.get("url", ""))
         downloaded.append(data)
-        _safe_print(
-            f"[{done}/{selected_total}] [{_status_label(data.get('status_code', 'ERR'))}] "
-            f"Chương {idx:04d}/{len(chapters):04d}: {data.get('title') or chapter.get('title')}"
-        )
-
-    _safe_print(f"Hoàn tất tải/cache {selected_total} chương.")
-    if failures:
-        sample = ", ".join(f"{idx}:{status}" for idx, status in failures[:8])
-        suffix = "..." if len(failures) > 8 else ""
-        _safe_print(f"Cảnh báo: còn {len(failures)} chương chưa tải được ({sample}{suffix}). Chạy lại sẽ tự thử tải lại cache lỗi.")
+        status_code = data.get("status_code", "ERR")
+        _safe_print(f"[{done}/{total_selected}] [{_status_label(status_code)}] Chương {idx:04d}/{len(chapters):04d}: {chapter['title']}")
+    _safe_print(f"Hoàn tất tải/cache {total_selected} chương.")
     return downloaded
 
 
@@ -731,88 +664,54 @@ def save_all_chapters_to_html(
     *,
     force: bool = False,
 ) -> List[Dict[str, str]]:
-    book_info = {"title": book_title or "Unknown"}
-    return download_chapters(book_info, chapters, out_dir, start=start, end=end, force=force)
-
-
-def save_txt_from_html(
-    book_info: Dict[str, str],
-    chapters: List[Dict[str, str]],
-    out_dir: str | Path,
-    start: int = 1,
-    end: Optional[int] = None,
-) -> None:
+    """API tương thích main.py: lưu HTML ở dạng 0001 - title.html trong out_dir."""
+    out_path = Path(out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
     start, end = _normalize_range(len(chapters), start, end)
-    txt_dir = Path(out_dir) / "txt"
-    txt_dir.mkdir(parents=True, exist_ok=True)
-    total = end - start + 1
+    total_selected = end - start + 1
+    saved: List[Dict[str, str]] = []
 
-    failures: List[Tuple[int, object]] = []
-    for idx in range(start, end + 1):
-        cached = _find_cached_chapter_path(out_dir, idx)
-        if cached:
-            data = _read_cached_chapter(cached)
-            if _is_failed_chapter_data(data):
-                data = _save_chapter_html(chapters[idx - 1], idx, out_dir, book_title=book_info.get("title", ""))
+    for done, idx in enumerate(range(start, end + 1), 1):
+        chapter = chapters[idx - 1]
+        root_matches = sorted(out_path.glob(f"{idx:04d}*.html"))
+        if root_matches and not force:
+            data = _read_cached_chapter(root_matches[0])
         else:
-            data = _save_chapter_html(chapters[idx - 1], idx, out_dir, book_title=book_info.get("title", ""))
-        if _is_failed_chapter_data(data):
-            failures.append((idx, data.get("status_code", "ERR")))
-        else:
-            _save_chapter_txt(data, txt_dir / f"{idx:04d}.txt")
-    _safe_print(f"Đã lưu TXT tách chương: {txt_dir}")
-    if failures:
-        sample = ", ".join(f"{idx}:{status}" for idx, status in failures[:8])
-        suffix = "..." if len(failures) > 8 else ""
-        _safe_print(f"TXT tách bỏ qua {len(failures)} chương lỗi ({sample}{suffix})")
+            data = _save_chapter_html(chapter, idx, out_path, book_title=book_title, force=force)
+            export_path = out_path / f"{idx:04d} - {_safe_filename(data.get('title') or chapter.get('title') or f'Chương {idx}', 90)}.html"
+            if force or not export_path.exists():
+                export_path.write_text(
+                    _chapter_html_doc(data["title"], data["content_html"], data.get("url", chapter["url"])),
+                    encoding="utf-8",
+                )
+        saved.append(data)
+        _safe_print(
+            f"[{done}/{total_selected}] [{_status_label(data.get('status_code', 'ERR'))}] "
+            f"Chương {idx:04d}/{len(chapters):04d}: {data.get('title') or chapter.get('title')}"
+        )
+
+    return saved
 
 
-def save_combined_txt(
-    book_info: Dict[str, str],
-    chapters: List[Dict[str, str]],
-    book_dir: str | Path,
-    start: int = 1,
-    end: Optional[int] = None,
-) -> Path:
-    book_dir = Path(book_dir)
+def save_combined_txt(book_info: Dict[str, str], chapters: List[Dict[str, str]], book_dir: Path) -> Path:
     book_dir.mkdir(parents=True, exist_ok=True)
-    start, end = _normalize_range(len(chapters), start, end)
-    suffix = "" if start == 1 and end == len(chapters) else f"_{start:04d}-{end:04d}"
-    out_path = book_dir / f"{_safe_filename(book_info['title'])}{suffix}.txt"
+    out_path = book_dir / f"{_safe_filename(book_info['title'])}.txt"
     chunks: List[str] = [book_info["title"], f"作者：{book_info.get('author', 'Unknown')}", ""]
     if book_info.get("intro"):
         chunks.extend(["内容简介：", book_info["intro"], ""])
 
-    total = end - start + 1
-    failures: List[Tuple[int, object]] = []
-    for idx in range(start, end + 1):
-        cached = _find_cached_chapter_path(book_dir, idx)
-        if cached:
-            data = _read_cached_chapter(cached)
-            if _is_failed_chapter_data(data):
-                data = _save_chapter_html(chapters[idx - 1], idx, book_dir, book_title=book_info.get("title", ""))
+    for idx, chapter in enumerate(chapters, 1):
+        html_path = _find_cached_chapter_path(book_dir, idx)
+        if html_path:
+            data = _read_cached_chapter(html_path)
         else:
-            data = _save_chapter_html(chapters[idx - 1], idx, book_dir, book_title=book_info.get("title", ""))
-        text = data.get("text") or BeautifulSoup(data["content_html"], "html.parser").get_text("\n", strip=True)
-        if _is_failed_chapter_data(data):
-            failures.append((idx, data.get("status_code", "ERR")))
+            data = _save_chapter_html(chapter, idx, book_dir, book_title=book_info.get("title", ""))
+        text = BeautifulSoup(data["content_html"], "html.parser").get_text("\n", strip=True)
         chunks.extend([data["title"], "", text, ""])
 
     out_path.write_text("\n".join(chunks), encoding="utf-8")
     _safe_print(f"Đã lưu TXT gộp: {out_path}")
-    if failures:
-        sample = ", ".join(f"{idx}:{status}" for idx, status in failures[:8])
-        suffix = "..." if len(failures) > 8 else ""
-        _safe_print(f"TXT gộp còn {len(failures)} chương lỗi ({sample}{suffix})")
     return out_path
-
-
-def _save_txt_combined(book_title: str, chapters: List[Dict], out_dir: str, start: int = 1, end: Optional[int] = None):
-    return save_combined_txt({"title": book_title, "author": "Unknown"}, chapters, out_dir, start, end)
-
-
-def _save_txt_split(book_title: str, chapters: List[Dict], out_dir: str, start: int = 1, end: Optional[int] = None):
-    return save_txt_from_html({"title": book_title, "author": "Unknown"}, chapters, out_dir, start, end)
 
 
 def _download_cover(cover_url: str) -> Tuple[Optional[bytes], Optional[str]]:
@@ -866,93 +765,192 @@ def _fetch_cover_from_book_page(book_page_url: str) -> Tuple[Optional[bytes], Op
 fetch_cover_from_book_page = _fetch_cover_from_book_page
 
 
-def build_epub(
+def _zip_write(zf: zipfile.ZipFile, arcname: str, data: bytes | str, *, compress: bool = True) -> None:
+    if isinstance(data, str):
+        data = data.encode("utf-8")
+    info = zipfile.ZipInfo(arcname)
+    info.compress_type = zipfile.ZIP_DEFLATED if compress else zipfile.ZIP_STORED
+    zf.writestr(info, data)
+
+
+def _xhtml_page(title: str, body_html: str, *, css_href: str = "../Styles/style.css") -> str:
+    return f"""<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="zh-CN" lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <title>{html.escape(title)}</title>
+  <link rel="stylesheet" type="text/css" href="{css_href}"/>
+</head>
+<body>
+{body_html}
+</body>
+</html>
+"""
+
+
+def build_epub_manual(
     book_info: Dict[str, str],
     chapters: List[Dict[str, str]],
-    book_dir: str | Path,
+    book_dir: Path,
     *,
     start: int = 1,
     end: Optional[int] = None,
     cover_bytes: Optional[bytes] = None,
     cover_ext: Optional[str] = None,
 ) -> Path:
-    import epub_builder
-
-    book_dir = Path(book_dir)
     start, end = _normalize_range(len(chapters), start, end)
-    selected_chapters = chapters[start - 1:end]
-    chapters_data = _selected_chapter_data(book_info, chapters, book_dir, start=start, end=end)
+    book_dir.mkdir(parents=True, exist_ok=True)
 
-    suffix = "" if start == 1 and end == len(chapters) else f"_{start:04d}-{end:04d}"
-    epub_path = book_dir / f"{_safe_filename(book_info['title'])}{suffix}.epub"
-
-    _safe_print(f"[Epub] Đang tạo ebook: {epub_path}")
-    noise = io.StringIO()
-    with redirect_stdout(noise):
-        epub_builder.create_epub(
-            book_url=book_info.get("url", ""),
-            book_title=book_info.get("title", "Truyện"),
-            author=book_info.get("author", "Unknown"),
-            chapters=selected_chapters,
-            fetch_fn=fetch_chapter_content,
-            cover_bytes=cover_bytes,
-            cover_ext=cover_ext or ".jpg",
-            out_epub_path=str(epub_path),
-            html_cache_dir=None,
-            chapters_data=chapters_data,
-            language="zh-CN",
-        )
-    _safe_print(f"[Epub] Đã tạo xong ebook: {epub_path}")
-    return epub_path
-
-
-def _save_epub(
-    book_title: str,
-    author: str,
-    chapters: List[Dict],
-    out_dir: str,
-    cover_bytes: bytes = None,
-    cover_ext: str = ".jpg",
-    start: int = 1,
-    end: Optional[int] = None,
-):
-    book_info = {"title": book_title or "Unknown", "author": author or "Unknown", "url": ""}
-    return build_epub(book_info, chapters, out_dir, start=start, end=end, cover_bytes=cover_bytes, cover_ext=cover_ext)
-
-
-def _selected_chapter_data(
-    book_info: Dict[str, str],
-    chapters: List[Dict[str, str]],
-    book_dir: str | Path,
-    start: int = 1,
-    end: Optional[int] = None,
-) -> List[Dict[str, str]]:
-    book_dir = Path(book_dir)
-    start, end = _normalize_range(len(chapters), start, end)
     items: List[Dict[str, str]] = []
-    failures: List[Tuple[int, object]] = []
-
     for idx in range(start, end + 1):
-        cached = _find_cached_chapter_path(book_dir, idx)
-        if cached:
-            data = _read_cached_chapter(cached)
-            if _is_failed_chapter_data(data):
-                data = _save_chapter_html(chapters[idx - 1], idx, book_dir, book_title=book_info.get("title", ""))
-        else:
-            data = _save_chapter_html(chapters[idx - 1], idx, book_dir, book_title=book_info.get("title", ""))
-        if not _is_failed_chapter_data(data):
-            _write_export_html(data, book_dir, idx, chapters[idx - 1].get("url", ""))
-        items.append(data)
-        status = data.get("status_code")
-        if status not in ("CACHE", 200):
-            failures.append((idx, status))
+        html_path = _find_cached_chapter_path(book_dir, idx)
+        if not html_path:
+            _save_chapter_html(chapters[idx - 1], idx, book_dir, book_title=book_info.get("title", ""))
+            html_path = _chapter_html_path(book_dir, idx)
+        items.append(_read_cached_chapter(html_path))
 
-    if failures:
-        sample = ", ".join(f"{idx}:{status}" for idx, status in failures[:5])
-        suffix = "..." if len(failures) > 5 else ""
-        _safe_print(f"[Epub] Cảnh báo: {len(failures)} chương lỗi ({sample}{suffix})")
+    title = book_info.get("title") or "Truyện"
+    author = book_info.get("author") or "Unknown"
+    range_suffix = "" if start == 1 and end == len(chapters) else f"_{start:04d}-{end:04d}"
+    epub_path = OUTPUT_BASE / f"{_safe_filename(title)}_{_safe_filename(author)}{range_suffix}.epub"
+    epub_path.parent.mkdir(parents=True, exist_ok=True)
+    uid = f"urn:uuid:{uuid4()}"
+    modified = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-    return items
+    has_cover = bool(cover_bytes and cover_ext)
+    cover_ext = (cover_ext or ".jpg").lower()
+    if cover_ext == ".jpeg":
+        cover_ext = ".jpg"
+    cover_media = {
+        ".jpg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+    }.get(cover_ext, "image/jpeg")
+    cover_name = f"Images/cover{cover_ext if cover_ext in {'.jpg', '.png', '.webp', '.gif'} else '.jpg'}"
+
+    manifest_items: List[str] = [
+        '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>',
+        '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>',
+        '<item id="style" href="Styles/style.css" media-type="text/css"/>',
+        '<item id="titlepage" href="Text/title.xhtml" media-type="application/xhtml+xml"/>',
+    ]
+    spine_items: List[str] = ['<itemref idref="titlepage"/>']
+    nav_links: List[str] = ['<li><a href="Text/title.xhtml">封面</a></li>']
+    nav_points: List[str] = [
+        '<navPoint id="nav0" playOrder="1"><navLabel><text>封面</text></navLabel>'
+        '<content src="Text/title.xhtml"/></navPoint>'
+    ]
+
+    if has_cover:
+        manifest_items.append(f'<item id="cover-image" href="{cover_name}" media-type="{cover_media}" properties="cover-image"/>')
+        manifest_items.append('<item id="cover" href="Text/cover.xhtml" media-type="application/xhtml+xml"/>')
+        spine_items.insert(0, '<itemref idref="cover"/>')
+
+    for order, chapter in enumerate(items, 1):
+        file_name = f"Text/chapter_{order:04d}.xhtml"
+        manifest_items.append(f'<item id="chap{order}" href="{file_name}" media-type="application/xhtml+xml"/>')
+        spine_items.append(f'<itemref idref="chap{order}"/>')
+        nav_links.append(f'<li><a href="{file_name}">{html.escape(chapter["title"])}</a></li>')
+        nav_points.append(
+            f'<navPoint id="nav{order}" playOrder="{order + 1}">'
+            f'<navLabel><text>{html.escape(chapter["title"])}</text></navLabel>'
+            f'<content src="{file_name}"/></navPoint>'
+        )
+
+    style_css = """
+body { font-family: serif; line-height: 1.75; margin: 5%; }
+h1 { font-size: 1.35em; line-height: 1.3; margin: 0 0 1em; text-align: center; }
+p { margin: 0.65em 0; text-indent: 2em; }
+.meta, .intro { text-indent: 0; }
+.cover { text-align: center; margin: 0; text-indent: 0; }
+.cover img { max-width: 100%; max-height: 95vh; height: auto; }
+nav ol { padding-left: 1.4em; }
+""".strip()
+
+    intro = book_info.get("intro", "")
+    title_body = [
+        f"<h1>{html.escape(title)}</h1>",
+        f'<p class="meta">作者：{html.escape(author)}</p>',
+    ]
+    if intro:
+        title_body.append(f'<p class="intro">{html.escape(intro)}</p>')
+    title_xhtml = _xhtml_page(title, "\n".join(title_body))
+
+    nav_xhtml = _xhtml_page(
+        "目录",
+        f"""<nav epub:type="toc" id="toc">
+  <h1>目录</h1>
+  <ol>
+    {"".join(nav_links)}
+  </ol>
+</nav>""",
+        css_href="Styles/style.css",
+    )
+
+    toc_ncx = f"""<?xml version="1.0" encoding="utf-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <head>
+    <meta name="dtb:uid" content="{html.escape(uid)}"/>
+    <meta name="dtb:depth" content="1"/>
+    <meta name="dtb:totalPageCount" content="0"/>
+    <meta name="dtb:maxPageNumber" content="0"/>
+  </head>
+  <docTitle><text>{html.escape(title)}</text></docTitle>
+  <navMap>{"".join(nav_points)}</navMap>
+</ncx>
+"""
+
+    content_opf = f"""<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="BookId">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="BookId">{html.escape(uid)}</dc:identifier>
+    <dc:title>{html.escape(title)}</dc:title>
+    <dc:creator>{html.escape(author)}</dc:creator>
+    <dc:language>zh-CN</dc:language>
+    <dc:source>{html.escape(book_info.get("url", ""))}</dc:source>
+    <meta property="dcterms:modified">{modified}</meta>
+    {'<meta name="cover" content="cover-image"/>' if has_cover else ''}
+  </metadata>
+  <manifest>
+    {"".join(manifest_items)}
+  </manifest>
+  <spine toc="ncx">
+    {"".join(spine_items)}
+  </spine>
+</package>
+"""
+
+    container_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>
+"""
+
+    _safe_print(f"Đang đóng gói EPUB: {epub_path}")
+    with zipfile.ZipFile(epub_path, "w") as zf:
+        _zip_write(zf, "mimetype", "application/epub+zip", compress=False)
+        _zip_write(zf, "META-INF/container.xml", container_xml)
+        _zip_write(zf, "OEBPS/Styles/style.css", style_css)
+        _zip_write(zf, "OEBPS/content.opf", content_opf)
+        _zip_write(zf, "OEBPS/toc.ncx", toc_ncx)
+        _zip_write(zf, "OEBPS/nav.xhtml", nav_xhtml)
+        _zip_write(zf, "OEBPS/Text/title.xhtml", title_xhtml)
+
+        if has_cover:
+            _zip_write(zf, f"OEBPS/{cover_name}", cover_bytes)
+            cover_xhtml = _xhtml_page("Cover", f'<p class="cover"><img src="../{cover_name}" alt="{html.escape(title)}"/></p>')
+            _zip_write(zf, "OEBPS/Text/cover.xhtml", cover_xhtml)
+
+        for order, chapter in enumerate(items, 1):
+            body = f"<h1>{html.escape(chapter['title'])}</h1>\n{chapter.get('content_html') or '<p>(Không có nội dung)</p>'}"
+            _zip_write(zf, f"OEBPS/Text/chapter_{order:04d}.xhtml", _xhtml_page(chapter["title"], body))
+
+    _safe_print(f"Đã tạo EPUB thủ công: {epub_path}")
+    return epub_path
 
 
 def _prepare_book_dir(book_info: Dict[str, str]) -> Path:
@@ -992,47 +990,6 @@ def _load_cover(book_info: Dict[str, str], book_dir: Path) -> Tuple[Optional[byt
     return cover_bytes, cover_ext
 
 
-def _load_book_context(url: str) -> Tuple[Dict[str, str], List[Dict[str, str]], Path, Optional[bytes], Optional[str]]:
-    url = _ensure_url(url)
-    _safe_print("Đang lấy thông tin truyện...")
-    data = getText(url)
-    book_info = {
-        "title": data.get("title") or "Unknown",
-        "author": data.get("author") or "Unknown",
-        "status": data.get("status", ""),
-        "category": data.get("category", ""),
-        "update_time": data.get("update_time", ""),
-        "latest_chapter": data.get("latest_chapter", ""),
-        "latest_chapter_url": data.get("latest_chapter_url", ""),
-        "intro": data.get("intro", ""),
-        "cover_url": data.get("cover_url", ""),
-        "url": data.get("url", url),
-    }
-    chapters = data.get("chapters", [])
-    book_dir = _prepare_book_dir(book_info)
-    _save_book_info(book_info, chapters, book_dir)
-    epub_preview_path = book_dir / f"{_safe_filename(book_info['title'])}.epub"
-
-    _safe_print("\n-----------------Thông tin truyện-----------------")
-    _safe_print(f"Tên truyện   : {book_info['title']}")
-    _safe_print(f"Tác giả      : {book_info['author']}")
-    if book_info.get("status"):
-        _safe_print(f"Trạng thái   : {book_info['status']}")
-    if book_info.get("category"):
-        _safe_print(f"Thể loại     : {book_info['category']}")
-    _safe_print(f"Số chương    : {len(chapters)}")
-    if book_info.get("latest_chapter"):
-        _safe_print(f"Mới nhất     : {book_info['latest_chapter']}")
-    _safe_print(f"Thư mục truyện: {book_dir}")
-    _safe_print(f"EPUB sẽ lưu  : {epub_preview_path}")
-    if book_info.get("intro"):
-        intro = book_info["intro"]
-        _safe_print(f"Giới thiệu   : {intro[:160]}{'...' if len(intro) > 160 else ''}")
-
-    cover_bytes, cover_ext = _load_cover(book_info, book_dir)
-    return book_info, chapters, book_dir, cover_bytes, cover_ext
-
-
 def _ask_int(prompt: str, default: Optional[int] = None) -> int:
     while True:
         raw = input(prompt).strip()
@@ -1044,8 +1001,48 @@ def _ask_int(prompt: str, default: Optional[int] = None) -> int:
             _safe_print("Vui lòng nhập số hợp lệ.")
 
 
+def _load_book_context(url: str) -> Tuple[Dict[str, str], List[Dict[str, str]], Path, Optional[bytes], Optional[str]]:
+    url = _ensure_url(url)
+    _safe_print("Đang lấy thông tin truyện...")
+    data = getText(url)
+    book_info = {
+        "title": data["title"],
+        "author": data["author"],
+        "status": data.get("status", ""),
+        "category": data.get("category", ""),
+        "update_time": data.get("update_time", ""),
+        "latest_chapter": data.get("latest_chapter", ""),
+        "latest_chapter_url": data.get("latest_chapter_url", ""),
+        "intro": data.get("intro", ""),
+        "cover_url": data.get("cover_url", ""),
+        "url": data.get("url", url),
+    }
+    chapters = data["chapters"]
+    book_dir = _prepare_book_dir(book_info)
+    _save_book_info(book_info, chapters, book_dir)
+    epub_preview_path = OUTPUT_BASE / f"{_safe_filename(book_info['title'])}_{_safe_filename(book_info['author'])}.epub"
+
+    _safe_print("\n-----------------Thông tin truyện-----------------")
+    _safe_print(f"Tên truyện   : {book_info['title']}")
+    _safe_print(f"Tác giả      : {book_info['author']}")
+    if book_info.get("status"):
+        _safe_print(f"Trạng thái   : {book_info['status']}")
+    if book_info.get("category"):
+        _safe_print(f"Thể loại     : {book_info['category']}")
+    _safe_print(f"Số chương    : {len(chapters)}")
+    if book_info.get("latest_chapter"):
+        _safe_print(f"Mới nhất     : {book_info['latest_chapter']}")
+    _safe_print(f"Thư mục chương: {book_dir}")
+    _safe_print(f"EPUB sẽ lưu  : {epub_preview_path}")
+    if book_info.get("intro"):
+        _safe_print(f"Giới thiệu   : {book_info['intro'][:160]}{'...' if len(book_info['intro']) > 160 else ''}")
+
+    cover_bytes, cover_ext = _load_cover(book_info, book_dir)
+    return book_info, chapters, book_dir, cover_bytes, cover_ext
+
+
 def main() -> None:
-    _safe_print("Downloader uukanshu.cc / UU看書")
+    _safe_print("Downloader balshuzhal.cc / 百书斋")
     raw_url = input(f"Nhập url [{DEFAULT_URL}]: ").strip()
     book_info, chapters, book_dir, cover_bytes, cover_ext = _load_book_context(raw_url or DEFAULT_URL)
 
@@ -1064,17 +1061,16 @@ def main() -> None:
                 break
             if choice == "1":
                 download_chapters(book_info, chapters, book_dir)
-                build_epub(book_info, chapters, book_dir, cover_bytes=cover_bytes, cover_ext=cover_ext)
+                build_epub_manual(book_info, chapters, book_dir, cover_bytes=cover_bytes, cover_ext=cover_ext)
             elif choice == "2":
                 download_chapters(book_info, chapters, book_dir)
                 save_combined_txt(book_info, chapters, book_dir)
-                save_txt_from_html(book_info, chapters, book_dir)
             elif choice == "3":
                 start = _ask_int("Chương bắt đầu: ")
                 end = _ask_int("Chương kết thúc: ", len(chapters))
                 normalized_start, normalized_end = _normalize_range(len(chapters), start, end)
                 download_chapters(book_info, chapters, book_dir, start=normalized_start, end=normalized_end)
-                build_epub(
+                build_epub_manual(
                     book_info,
                     chapters,
                     book_dir,
@@ -1084,7 +1080,7 @@ def main() -> None:
                     cover_ext=cover_ext,
                 )
             elif choice == "4":
-                build_epub(book_info, chapters, book_dir, cover_bytes=cover_bytes, cover_ext=cover_ext)
+                build_epub_manual(book_info, chapters, book_dir, cover_bytes=cover_bytes, cover_ext=cover_ext)
             elif choice == "5":
                 raw_url = input("Nhập url mới: ").strip()
                 if not raw_url:
