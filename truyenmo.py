@@ -18,11 +18,13 @@ from __future__ import annotations
 
 import argparse
 import html
+import io
 import os
 import re
 import sys
 import time
 import unicodedata
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
@@ -84,7 +86,11 @@ AD_TEXT_MARKERS = (
 
 
 def safe_print(message: str = "") -> None:
-    print(message, flush=True)
+    try:
+        sys.stdout.buffer.write((message + "\n").encode("utf-8", errors="replace"))
+        sys.stdout.buffer.flush()
+    except Exception:
+        print(message, flush=True)
 
 
 def build_session() -> requests.Session:
@@ -489,12 +495,86 @@ def clean_chapter_content(soup: BeautifulSoup, page_url: str) -> str:
 
 
 def fetch_chapter(url: str) -> Dict[str, str]:
-    raw, final_url = fetch_text(url)
+    response = SESSION.get(url, timeout=TIMEOUT)
+    response.raise_for_status()
+    if not response.encoding or response.encoding.lower() in {"iso-8859-1", "latin-1"}:
+        response.encoding = response.apparent_encoding or "utf-8"
+
+    raw = response.text
+    final_url = response.url
     soup = BeautifulSoup(raw, "html.parser")
     apply_css_before_text(soup)
     title = pick_chapter_title(soup)
     content_html = clean_chapter_content(soup, final_url)
-    return {"title": title, "content_html": content_html, "url": final_url}
+    return {
+        "title": title,
+        "content_html": content_html,
+        "url": final_url,
+        "status_code": response.status_code,
+    }
+
+def _normalize_range(total: int, start: int = 1, end: Optional[int] = None) -> Tuple[int, int]:
+    if total < 1:
+        raise ValueError("Không có chương để xử lý.")
+    start = int(start or 1)
+    end = total if end is None else int(end)
+    start = max(1, start)
+    end = min(total, end)
+    if start > end:
+        raise ValueError("Khoảng chương không hợp lệ.")
+    return start, end
+
+def _status_label(status) -> str:
+    if status == "CACHE":
+        return "CACHE"
+    if status == 200:
+        return "\033[32mHTTP=200\033[0m"
+    if isinstance(status, int):
+        return f"\033[31mHTTP={status}\033[0m" if status >= 400 else f"HTTP={status}"
+    return f"HTTP={status}"
+
+def _find_cached_chapter_path(out_dir: str | Path, idx: int) -> Optional[Path]:
+    matches = sorted(Path(out_dir).glob(f"{idx:04d}*.html"))
+    return matches[0] if matches else None
+
+def _read_cached_chapter(path: str | Path) -> Dict[str, str]:
+    path = Path(path)
+    soup = BeautifulSoup(path.read_text(encoding="utf-8", errors="replace"), "html.parser")
+    article = soup.select_one("article") or soup.body or soup
+    title = normalize_title(text_of(soup.find("h1"))) or path.stem
+    source_link = soup.select_one(".meta a[href]") or soup.find("a", href=True)
+    return {
+        "title": title,
+        "content_html": inner_html(article),
+        "url": source_link.get("href", "") if source_link else "",
+        "status_code": "CACHE",
+    }
+
+def _load_or_fetch_chapter(
+    idx: int,
+    chapter: Dict[str, str],
+    out_dir: str | Path,
+    book_title: str,
+    *,
+    save_html: bool,
+    force: bool = False,
+) -> Tuple[Dict[str, str], Optional[Path]]:
+    if not force:
+        cached_path = _find_cached_chapter_path(out_dir, idx)
+        if cached_path:
+            data = _read_cached_chapter(cached_path)
+            if not data.get("url"):
+                data["url"] = chapter.get("url", "")
+            return data, cached_path
+
+    data = fetch_chapter(chapter["url"])
+    if not data.get("title"):
+        data["title"] = chapter.get("title") or f"Chương {idx}"
+
+    html_path = None
+    if save_html:
+        html_path = Path(save_chapter_html(book_title, idx, data, str(out_dir)))
+    return data, html_path
 
 
 HTML_TEMPLATE = """<!doctype html>
@@ -580,6 +660,8 @@ def download_chapters(
     mode: str,
     start: int = 1,
     end: Optional[int] = None,
+    *,
+    force: bool = False,
 ) -> Tuple[List[str], List[str], List[Dict[str, str]]]:
     html_paths: List[str] = []
     txt_paths: List[str] = []
@@ -587,35 +669,48 @@ def download_chapters(
     save_html = mode in {"1", "3", "4", "6"}
     save_txt = mode in {"2", "3", "5", "6"}
 
+    start, end = _normalize_range(len(chapters), start, end)
     selected = list(iter_selected_chapters(chapters, start, end))
     selected_count = len(selected)
+    safe_print(f"Bắt đầu tải/cache {selected_count} chương vào: {out_dir}")
+
     for done, (idx, item) in enumerate(selected, 1):
         try:
-            chapter = fetch_chapter(item["url"])
-            if not chapter.get("title"):
-                chapter["title"] = item.get("title") or f"Chương {idx}"
+            chapter, html_path = _load_or_fetch_chapter(
+                idx,
+                item,
+                out_dir,
+                book_title,
+                save_html=save_html,
+                force=force,
+            )
             chapters_data.append(chapter)
 
-            if save_html:
-                path = save_chapter_html(book_title, idx, chapter, out_dir)
-                html_paths.append(path)
-                safe_print(f"[{done:04d}/{selected_count:04d}] HTML: {path}")
+            if save_html and html_path:
+                html_paths.append(str(html_path))
             if save_txt:
                 path = save_chapter_txt(idx, chapter, out_dir)
                 txt_paths.append(path)
-                safe_print(f"[{done:04d}/{selected_count:04d}] TXT : {path}")
 
+            title = chapter.get("title") or item.get("title") or f"Chương {idx}"
+            safe_print(
+                f"[{done}/{selected_count}] [{_status_label(chapter.get('status_code', 'ERR'))}] "
+                f"Chương {idx:04d}/{len(chapters):04d}: {title}"
+            )
             time.sleep(SLEEP_BETWEEN_CHAPTERS)
         except Exception as exc:
-            safe_print(f"[{done:04d}/{selected_count:04d}] ERROR {item.get('url')}: {exc}")
+            title = item.get("title") or f"Chương {idx}"
+            safe_print(f"[{done}/{selected_count}] [ERR] Chương {idx:04d}/{len(chapters):04d}: {title} ({exc})")
             chapters_data.append(
                 {
-                    "title": item.get("title") or f"Chương {idx}",
+                    "title": title,
                     "content_html": f"<p>Không tải được chương này: {html.escape(str(exc))}</p>",
                     "url": item.get("url", ""),
+                    "status_code": "ERR",
                 }
             )
 
+    safe_print(f"Hoàn tất tải/cache {selected_count} chương.")
     return html_paths, txt_paths, chapters_data
 
 
@@ -669,31 +764,56 @@ def build_epub_from_data(
         safe_print("Không tìm thấy epub_builder.py, bỏ qua EPUB.")
         return None
 
+    start, end = _normalize_range(len(chapters), start, end)
     selected_chapters = [item for _idx, item in iter_selected_chapters(chapters, start, end)]
     if not selected_chapters:
         safe_print("Không có chương để đóng EPUB.")
         return None
 
     cover_bytes, cover_ext = download_cover(str(info.get("cover_url") or ""))
-    actual_end = start + len(selected_chapters) - 1
-    is_partial = start != 1 or actual_end != len(chapters)
-    suffix = f"-{start:04d}-{actual_end:04d}" if is_partial else ""
+    is_partial = start != 1 or end != len(chapters)
+    suffix = f"-{start:04d}-{end:04d}" if is_partial else ""
     epub_path = os.path.join(OUTPUT_DIR, f"{slugify(str(info.get('title') or 'TruyenMo'))}{suffix}.epub")
-    return epub_builder.create_epub(
-        story_url,
-        str(info.get("title") or "TruyenMo"),
-        str(info.get("author") or "Unknown"),
-        selected_chapters,
-        fetch_fn=None,
-        cover_bytes=cover_bytes,
-        cover_ext=cover_ext,
-        language="vi",
-        creator="Hishiro",
-        sleep=SLEEP_BETWEEN_CHAPTERS,
-        out_epub_path=epub_path,
-        html_cache_dir=out_dir,
-        chapters_data=chapters_data,
-    )
+    safe_print(f"[Epub] Đang tạo ebook: {epub_path}")
+    noise = io.StringIO()
+    with redirect_stdout(noise):
+        created_path = epub_builder.create_epub(
+            story_url,
+            str(info.get("title") or "TruyenMo"),
+            str(info.get("author") or "Unknown"),
+            selected_chapters,
+            fetch_fn=None,
+            cover_bytes=cover_bytes,
+            cover_ext=cover_ext,
+            language="vi",
+            creator="Hishiro",
+            sleep=SLEEP_BETWEEN_CHAPTERS,
+            out_epub_path=epub_path,
+            html_cache_dir=out_dir,
+            chapters_data=chapters_data,
+        )
+    safe_print(f"[Epub] Đã tạo xong ebook: {created_path}")
+    return created_path
+
+def _selected_chapter_data(
+    book_title: str,
+    chapters: List[Dict[str, str]],
+    out_dir: str | Path,
+    start: int = 1,
+    end: Optional[int] = None,
+) -> List[Dict[str, str]]:
+    start, end = _normalize_range(len(chapters), start, end)
+    items: List[Dict[str, str]] = []
+    for idx in range(start, end + 1):
+        data, _html_path = _load_or_fetch_chapter(
+            idx,
+            chapters[idx - 1],
+            out_dir,
+            book_title,
+            save_html=True,
+        )
+        items.append(data)
+    return items
 
 
 def clean_saved_html_file(path: str) -> bool:
@@ -742,23 +862,20 @@ def parse_args() -> argparse.Namespace:
 
 
 def prompt_if_needed(args: argparse.Namespace) -> argparse.Namespace:
-    if args.clean_dir:
-        return args
-
     if not args.source:
         args.source = input("Nhập URL truyện hoặc file HTML info: ").strip()
     if not args.source:
         raise SystemExit("Thiếu URL hoặc file HTML info.")
 
     if not args.mode:
-        safe_print("\nChọn chức năng:")
-        safe_print("[1]: Tải và lưu dạng HTML")
-        safe_print("[2]: Tải và lưu dạng TXT")
-        safe_print("[3]: Tải và lưu dạng HTML + TXT")
-        safe_print("[4]: Tải và lưu dạng HTML + Build EPUB")
-        safe_print("[5]: Tải và lưu dạng TXT + Build EPUB")
-        safe_print("[6]: Tải và lưu dạng HTML + TXT + Build EPUB")
-        args.mode = input("Nhập lựa chọn (1-6): ").strip() or "4"
+        safe_print("\n-----------------Menu-----------------")
+        safe_print("[1] Tải và lưu HTML")
+        safe_print("[2] Tải và lưu TXT")
+        safe_print("[3] Tải và lưu HTML + TXT")
+        safe_print("[4] Tải và lưu HTML + EPUB - Default")
+        safe_print("[5] Tải và lưu TXT + EPUB")
+        safe_print("[6] Tải và lưu HTML + TXT + EPUB")
+        args.mode = input("Chọn [4]: ").strip() or "4"
     if args.mode not in {"1", "2", "3", "4", "5", "6"}:
         raise SystemExit("Lựa chọn không hợp lệ.")
 
@@ -776,17 +893,41 @@ def prompt_if_needed(args: argparse.Namespace) -> argparse.Namespace:
             args.end = int(end_in)
     return args
 
+def _epub_preview_path(info: Dict[str, object]) -> str:
+    return os.path.join(OUTPUT_DIR, f"{slugify(str(info.get('title') or 'TruyenMo'))}.epub")
 
-def main() -> None:
-    args = prompt_if_needed(parse_args())
-    if args.clean_dir:
-        total, changed = clean_output_dir(args.clean_dir)
-        safe_print(f"DONE: cleaned {changed}/{total} HTML file(s)")
-        return
+def _print_book_info(
+    source: str,
+    story_url: str,
+    is_local: bool,
+    info: Dict[str, object],
+    chapters: List[Dict[str, str]],
+    out_dir: str,
+    info_path: str,
+) -> None:
+    safe_print("\n-----------------Thông tin truyện-----------------")
+    safe_print(f"Tên truyện     : {info.get('title')}")
+    safe_print(f"Tác giả        : {info.get('author')}")
+    if info.get("status"):
+        safe_print(f"Trạng thái     : {info.get('status')}")
+    if info.get("team"):
+        safe_print(f"Nhóm dịch      : {info.get('team')}")
+    genres = ", ".join(info.get("genres") or [])
+    if genres:
+        safe_print(f"Thể loại       : {genres}")
+    safe_print(f"Số chương      : {len(chapters)}")
+    safe_print(f"Nguồn          : {'local HTML' if is_local else 'web'}")
+    safe_print(f"URL            : {story_url}")
+    safe_print(f"Thư mục truyện : {out_dir}")
+    safe_print(f"Book info      : {info_path}")
+    safe_print(f"EPUB sẽ lưu    : {_epub_preview_path(info)}")
+    description = str(info.get("description") or "")
+    if description:
+        safe_print(f"Giới thiệu     : {description[:160]}{'...' if len(description) > 160 else ''}")
 
-    source = resolve_local_source(args.source)
-
-    safe_print("\n--- 1. Đọc trang info ---")
+def _load_book_context(source: str) -> Tuple[str, str, bool, Dict[str, object], List[Dict[str, str]], str]:
+    source = resolve_local_source(source)
+    safe_print("Đang lấy thông tin truyện...")
     soup, story_url, is_local = soup_from_source(source)
     info = get_book_info(soup, story_url)
     chapters = get_chapter_list(soup, story_url)
@@ -797,48 +938,148 @@ def main() -> None:
     out_dir = os.path.join(OUTPUT_DIR, slugify(str(info.get("title") or "TruyenMo")))
     os.makedirs(out_dir, exist_ok=True)
     info_path = write_book_info(info, chapters, story_url, out_dir)
+    _print_book_info(source, story_url, is_local, info, chapters, out_dir, info_path)
+    return source, story_url, is_local, info, chapters, out_dir
 
-    safe_print("\n---------------- STORY INFO ----------------")
-    safe_print(f"Source      : {source}")
-    safe_print(f"Info source : {'local HTML' if is_local else 'web'}")
-    safe_print(f"Title       : {info.get('title')}")
-    safe_print(f"Author      : {info.get('author')}")
-    safe_print(f"Genres      : {', '.join(info.get('genres') or [])}")
-    safe_print(f"Status      : {info.get('status')}")
-    safe_print(f"Chapters    : {len(chapters)}")
-    safe_print(f"Output dir  : {out_dir}")
-    safe_print(f"Book info   : {info_path}")
-    safe_print("--------------------------------------------\n")
+def _print_done_summary(
+    html_paths: List[str],
+    txt_paths: List[str],
+    epub_path: Optional[str],
+    out_dir: str,
+) -> None:
+    safe_print("\n-------------------Hoàn tất-------------------")
+    if html_paths:
+        safe_print(f"HTML: {len(html_paths)} file tại {out_dir}")
+    if txt_paths:
+        safe_print(f"TXT : {len(txt_paths)} file tại {out_dir}")
+    if epub_path:
+        safe_print(f"EPUB: {epub_path}")
 
+def _run_download_mode(
+    story_url: str,
+    info: Dict[str, object],
+    chapters: List[Dict[str, str]],
+    out_dir: str,
+    mode: str,
+    *,
+    start: int = 1,
+    end: Optional[int] = None,
+) -> Tuple[List[str], List[str], List[Dict[str, str]], Optional[str]]:
     html_paths, txt_paths, chapters_data = download_chapters(
         str(info.get("title") or "TruyenMo"),
         chapters,
         out_dir,
-        args.mode,
-        start=args.start,
-        end=args.end,
+        mode,
+        start=start,
+        end=end,
     )
 
     epub_path = None
-    if args.mode in {"4", "5", "6"}:
-        safe_print("\n--- Build EPUB ---")
+    if mode in {"4", "5", "6"}:
         epub_path = build_epub_from_data(
             story_url,
             info,
             chapters,
             chapters_data,
-            start=args.start,
-            end=args.end,
+            start=start,
+            end=end,
             out_dir=out_dir,
         )
 
-    safe_print("\n------------------- DONE -------------------")
-    if html_paths:
-        safe_print(f"HTML: {len(html_paths)} file(s) tại {out_dir}")
-    if txt_paths:
-        safe_print(f"TXT : {len(txt_paths)} file(s) tại {out_dir}")
-    if epub_path:
-        safe_print(f"EPUB: {epub_path}")
+    _print_done_summary(html_paths, txt_paths, epub_path, out_dir)
+    return html_paths, txt_paths, chapters_data, epub_path
+
+def _build_epub_from_cache(
+    story_url: str,
+    info: Dict[str, object],
+    chapters: List[Dict[str, str]],
+    out_dir: str,
+    *,
+    start: int = 1,
+    end: Optional[int] = None,
+) -> Optional[str]:
+    chapters_data = _selected_chapter_data(str(info.get("title") or "TruyenMo"), chapters, out_dir, start, end)
+    epub_path = build_epub_from_data(story_url, info, chapters, chapters_data, start, end, out_dir)
+    _print_done_summary([], [], epub_path, out_dir)
+    return epub_path
+
+def _ask_int(prompt: str, default: Optional[int] = None) -> int:
+    while True:
+        raw = input(prompt).strip()
+        if not raw and default is not None:
+            return default
+        try:
+            return int(raw)
+        except ValueError:
+            safe_print("Vui lòng nhập số hợp lệ.")
+
+def interactive_main() -> None:
+    safe_print("Downloader truyenmo.com / Truyện Mơ")
+    raw_source = input("Nhập URL truyện hoặc file HTML info: ").strip()
+    if not raw_source:
+        raise SystemExit("Thiếu URL hoặc file HTML info.")
+
+    _source, story_url, _is_local, info, chapters, out_dir = _load_book_context(raw_source)
+
+    while True:
+        safe_print("\n-----------------Menu-----------------")
+        safe_print("[1] Tải toàn bộ (HTML + EPUB) - Default")
+        safe_print("[2] Tải toàn bộ (HTML/TXT)")
+        safe_print("[3] Tải từ chương X đến chương Y (HTML + EPUB)")
+        safe_print("[4] Tạo EPUB từ cache hiện có")
+        safe_print("[5] Nhập URL truyện mới")
+        safe_print("[0] Thoát")
+        choice = input("Chọn [1]: ").strip() or "1"
+
+        try:
+            if choice == "0":
+                break
+            if choice == "1":
+                _run_download_mode(story_url, info, chapters, out_dir, "4")
+            elif choice == "2":
+                _run_download_mode(story_url, info, chapters, out_dir, "3")
+            elif choice == "3":
+                start = _ask_int("Chương bắt đầu: ")
+                end = _ask_int("Chương kết thúc: ", len(chapters))
+                start, end = _normalize_range(len(chapters), start, end)
+                _run_download_mode(story_url, info, chapters, out_dir, "4", start=start, end=end)
+            elif choice == "4":
+                _build_epub_from_cache(story_url, info, chapters, out_dir)
+            elif choice == "5":
+                raw_source = input("Nhập URL/file mới: ").strip()
+                if not raw_source:
+                    safe_print("Nguồn trống, giữ nguyên truyện hiện tại.")
+                    continue
+                _source, story_url, _is_local, info, chapters, out_dir = _load_book_context(raw_source)
+            else:
+                safe_print("Lựa chọn không hợp lệ.")
+        except Exception as exc:
+            safe_print(f"Lỗi: {exc}")
+
+def _should_use_interactive_menu(args: argparse.Namespace) -> bool:
+    return (
+        sys.stdin.isatty()
+        and not args.source
+        and not args.mode
+        and args.start is None
+        and args.end is None
+        and not args.clean_dir
+    )
+
+def main() -> None:
+    args = parse_args()
+    if args.clean_dir:
+        total, changed = clean_output_dir(args.clean_dir)
+        safe_print(f"Hoàn tất dọn {changed}/{total} file HTML.")
+        return
+
+    if _should_use_interactive_menu(args):
+        interactive_main()
+        return
+
+    args = prompt_if_needed(args)
+    _source, story_url, _is_local, info, chapters, out_dir = _load_book_context(args.source)
+    _run_download_mode(story_url, info, chapters, out_dir, args.mode, start=args.start, end=args.end)
 
 
 if __name__ == "__main__":
