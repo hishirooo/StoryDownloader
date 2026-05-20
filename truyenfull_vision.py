@@ -32,6 +32,8 @@ import requests, ssl, urllib3, re, json, html, os, unicodedata, zipfile, io, dat
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 import importlib, re, sys, os, io, glob
+from download_logger import chapter_log_line
+from epub_metadata import PUBLISHER, subject_xml
 
 # Thử import Pillow cho xử lý ảnh bìa
 try:
@@ -462,17 +464,18 @@ def save_all_chapters_to_html(book_title: str, chapters: list, out_dir: str,
     n = len(chapters)
     if end is None or end > n: end = n
     saved = []
-    for i in range(start, end + 1):
+    selected_total = end - start + 1
+    for done, i in enumerate(range(start, end + 1), 1):
         info = chapters[i-1]
         try:
             chap = fetch_chapter_content(info["url"])
             if not chap.get("title"): chap["title"] = info.get("title")
             p = save_chapter_html(book_title, i, chap, out_dir)
-            print(f"[{i:04d}/{n}] Saved HTML: {p}", flush=True)
+            print(chapter_log_line(done, selected_total, chap.get("status_code", 200), i, n, chap.get("title") or info.get("title") or ""), flush=True)
             saved.append(p)
             time.sleep(SLEEP_BETWEEN_CHAPS)
         except Exception as e:
-            print(f"[{i:04d}/{n}] ERROR {info.get('url')}: {e}", flush=True)
+            print(chapter_log_line(done, selected_total, "ERR", i, n, f"{info.get('title') or info.get('url')} ({e})"), flush=True)
     return saved
 
 def _slugify_vi(s: str) -> str:
@@ -583,7 +586,8 @@ def save_all_chapters_to_txt(book_title: str, chapters: list, out_dir: str,
     os.makedirs(out_dir, exist_ok=True)
     saved = []
 
-    for i in range(start, end + 1):
+    selected_total = end - start + 1
+    for done, i in enumerate(range(start, end + 1), 1):
         info = chapters[i - 1]
         try:
             c = fetch_chapter_content(info["url"])
@@ -596,11 +600,11 @@ def save_all_chapters_to_txt(book_title: str, chapters: list, out_dir: str,
             path = os.path.join(out_dir, fname)
             with open(path, "w", encoding="utf-8") as f:
                 f.write(txt)
-            print(f"[{i:04d}/{n}] Saved TXT: {path}", flush=True)
+            print(chapter_log_line(done, selected_total, c.get("status_code", 200), i, n, c.get("title") or info.get("title") or ""), flush=True)
             saved.append(path)
             time.sleep(SLEEP_BETWEEN_CHAPS)
         except Exception as e:
-            print(f"[{i:04d}/{n}] ERROR {info.get('url')}: {e}", flush=True)
+            print(chapter_log_line(done, selected_total, "ERR", i, n, f"{info.get('title') or info.get('url')} ({e})"), flush=True)
     return saved
 
 #-----------------------CREATE EPUB-----------------------#
@@ -626,7 +630,8 @@ def create_epub(book_url: str | None,
                 epub_target: str | None = None,
                 cover_bytes: bytes | None = None,
                 cover_ext: str | None = None,
-                cover_mime: str | None = None) -> str:
+                cover_mime: str | None = None,
+                tags=None) -> str:
     """
     Tạo EPUB2 hoặc EPUB3. 
     - chapters: list[str] (đọc HTML cục bộ) hoặc list[dict{url,...}] (fetch)
@@ -783,6 +788,7 @@ def create_epub(book_url: str | None,
         spine_items_str    = "\n    ".join(spine_items)
         navpoints_str      = "\n    ".join(navpoints)
         dt_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        subjects = subject_xml(tags, indent="    ")
         
         # Các item cho cover
         cover_media_item = f'<item id="cover-image" href="{cover_relpath}" media-type="{cover_mime or "image/jpeg"}"/>' if cover_relpath else ""
@@ -826,7 +832,8 @@ def create_epub(book_url: str | None,
                 f'    <dc:creator>{html.escape(author)}</dc:creator>\n'
                 f'    <dc:language>{language}</dc:language>\n'
                 f'    <meta name="creator" content="{html.escape(creator)}"/>\n'
-                f'    <dc:publisher>{html.escape(author)}</dc:publisher>\n'
+                f'    <dc:publisher>{html.escape(PUBLISHER)}</dc:publisher>\n'
+                f'{subjects}'
                 f'    <meta property="dcterms:modified">{dt_utc}</meta>\n'
                 '  </metadata>\n'
                 '  <manifest>\n'
@@ -858,7 +865,8 @@ def create_epub(book_url: str | None,
                 f'    <dc:identifier id="BookID">urn:uuid:{_slugify_vi(book_title)}-{int(time.time())}</dc:identifier>\n'
                 f'    <dc:title>{html.escape(book_title)}</dc:title>\n'
                 f'    <dc:creator>{html.escape(author)}</dc:creator>\n'
-                f'    <dc:publisher>{html.escape(author)}</dc:publisher>\n'
+                f'    <dc:publisher>{html.escape(PUBLISHER)}</dc:publisher>\n'
+                f'{subjects}'
                 f'    <dc:language>{language}</dc:language>\n'
                 '    <meta name="cover" content="cover-image"/>\n'
                 f'    <meta name="creator" content="{html.escape(creator)}"/>\n'
@@ -904,7 +912,7 @@ def create_epub(book_url: str | None,
 
 def build_epub(epub_out_dir: str, title: str, author: str, html_paths: list[str],
                cover_bytes: bytes | None = None, cover_ext: str | None = None, cover_mime: str | None = None,
-               epub_target: str | None = None) -> str:
+               epub_target: str | None = None, tags=None) -> str:
     """
     Nhận list đường dẫn HTML, sắp xếp, rồi gọi create_epub với cover & target.
     """
@@ -933,7 +941,8 @@ def build_epub(epub_out_dir: str, title: str, author: str, html_paths: list[str]
         epub_target=epub_target or EPUB_TARGET,
         cover_bytes=cover_bytes,
         cover_ext=cover_ext,
-        cover_mime=cover_mime
+        cover_mime=cover_mime,
+        tags=tags,
     )
 
 def _delete_files(paths: list[str]):
@@ -1030,7 +1039,7 @@ def main():
         if saved_htmls:
             epub_path = build_epub(epub_out_dir, title, author, saved_htmls,
                                 cover_bytes=cover_bytes, cover_ext=cover_ext, cover_mime=cover_mime,
-                                epub_target=EPUB_TARGET)
+                                epub_target=EPUB_TARGET, tags=info.get("Genres"))
             print(f"✔ EPUB: {epub_path}")
 
     # Xóa file HTML nếu người dùng chỉ chọn TXT (Mode 2) hoặc TXT+EPUB (Mode 5)

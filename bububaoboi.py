@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 import requests
 from bs4 import BeautifulSoup, Tag, NavigableString
+from download_logger import chapter_log_line
+from epub_metadata import subject_xml
 
 # =============== CẤU HÌNH ===============
 HEADERS = {"User-Agent": "Mozilla/5.0"}
@@ -180,7 +182,7 @@ def _get_content_chapters(chap_list: List[Dict[str, str]],
     """
     Lấy nội dung tất cả chương trong chap_list.
     - Ghi file vào: output/<tên_truyện>/<idx:03>.xhtml
-    - In log: [xxx/yyy] Saved - <title> - <path>
+    - In log: [XXX/YYY] [HTTP=...] Chương XXXX/YYYY: <title>
     - Trả về: List[ (idx, title, xhtml_content) ]
     """
     if not chap_list:
@@ -192,8 +194,6 @@ def _get_content_chapters(chap_list: List[Dict[str, str]],
 
     total = len(chap_list)
     results: List[Tuple[int, str, str]] = []
-    pad = max(3, len(str(total)))
-
     for i, chap in enumerate(chap_list, start=1):
         title = chap.get("title") or f"Chương {i}"
         url   = chap.get("url")
@@ -203,11 +203,11 @@ def _get_content_chapters(chap_list: List[Dict[str, str]],
             fpath = out_dir / fname
             with open(fpath, "w", encoding="utf-8") as f:
                 f.write(xhtml)
-            print(f"[{str(i).zfill(pad)}/{str(total).zfill(pad)}] Saved - {title} - {fpath}")
+            print(chapter_log_line(i, total, 200, i, total, title))
             results.append((i, title.strip(), xhtml))
             time.sleep(SLEEP_BETWEEN_CHAPS)
         except Exception as e:
-            print(f"[{str(i).zfill(pad)}/{str(total).zfill(pad)}] ❌ Lỗi lấy '{title}' ({url}): {e}")
+            print(chapter_log_line(i, total, "ERR", i, total, f"{title} ({e})"))
     return results
 
 # =============== COVER HELPERS ===============
@@ -301,7 +301,7 @@ def _epub_write(zipf, arcname, data_bytes, compress=True):
 
 def create_epub_epub3_for_kobo(book_title: str, author: str, items: list,
                                out_epub_dir: str, cover_bytes=None, cover_ext=None, cover_mime=None,
-                               language="vi", publisher="Hishiro"):
+                               language="vi", publisher="Hishiro", tags=None):
     os.makedirs(out_epub_dir, exist_ok=True)
     out_file = os.path.join(out_epub_dir, f"{_slugify_vi(book_title)}.epub")
     cover_rel = f"Images/cover{cover_ext}" if (cover_bytes and cover_ext) else None
@@ -396,6 +396,7 @@ def create_epub_epub3_for_kobo(book_title: str, author: str, items: list,
 
         # 7) content.opf (EPUB3, publisher = Hishiro)
         dt_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        subjects = subject_xml(tags, indent="    ")
         manifest_str = "\n    ".join([
             '<item id="css" href="Styles/style.css" media-type="text/css"/>',
             '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>',
@@ -411,6 +412,7 @@ def create_epub_epub3_for_kobo(book_title: str, author: str, items: list,
             f'    <dc:title>{html.escape(book_title)}</dc:title>\n'
             f'    <dc:creator>{html.escape(author or "—")}</dc:creator>\n'
             f'    <dc:publisher>{html.escape(publisher)}</dc:publisher>\n'
+            f'{subjects}'
             f'    <dc:language>{language}</dc:language>\n'
             f'    <meta property="dcterms:modified">{dt_utc}</meta>\n'
             '  </metadata>\n'

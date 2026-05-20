@@ -22,6 +22,7 @@ import os
 import re
 import sys
 import time
+from download_logger import chapter_log_line
 
 try:
     from curl_cffi import requests as http_requests
@@ -626,16 +627,6 @@ def _find_cached_chapter_path(out_dir: str | Path, idx: int) -> Optional[Path]:
     return None
 
 
-def _status_label(status) -> str:
-    if status == "CACHE":
-        return "CACHE"
-    if status == 200:
-        return "\033[32mHTTP=200\033[0m"
-    if isinstance(status, int):
-        return f"\033[31mHTTP={status}\033[0m" if status >= 400 else f"HTTP={status}"
-    return f"HTTP={status}"
-
-
 def _normalize_range(total: int, start: int = 1, end: Optional[int] = None) -> Tuple[int, int]:
     if total <= 0:
         return 1, 0
@@ -687,10 +678,7 @@ def save_all_chapters_to_html(
         chapter = chapters[idx - 1]
         data = _save_one_chapter_html(chapter, idx, out_dir, book_title=book_title, force=force)
         saved.append(data)
-        _safe_print(
-            f"[{done}/{selected_total}] [{_status_label(data.get('status_code', 'ERR'))}] "
-            f"Chương {idx:04d}/{len(chapters):04d}: {data.get('title') or chapter.get('title')}"
-        )
+        _safe_print(chapter_log_line(done, selected_total, data.get("status_code", "ERR"), idx, len(chapters), data.get("title") or chapter.get("title") or ""))
     return saved
 
 
@@ -880,6 +868,8 @@ def build_epub(
             html_cache_dir=str(book_dir),
             chapters_data=chapters_data,
             language="zh-CN",
+            tags=book_info.get("category", ""),
+            book_info=book_info,
         )
     _safe_print(f"[Epub] Đã tạo xong ebook: {epub_path}")
     return epub_path
@@ -896,47 +886,60 @@ def _ask_int(prompt: str, default: Optional[int] = None) -> int:
             _safe_print("Vui lòng nhập số hợp lệ.")
 
 
+def _print_download_menu() -> None:
+    _safe_print("\n-----------------Menu-----------------")
+    _safe_print("[1] Tải tất cả ( Html + Epub ) ( Mặc định )")
+    _safe_print("[2] Tải từ X tới Y ( html )")
+    _safe_print("[3] Tải chương X ( html )")
+    _safe_print("[4] Thoát")
+
+
+def _post_task_menu() -> bool:
+    _safe_print("\n-----------------Menu-----------------")
+    _safe_print("[1] Nhập Url truyện mới")
+    _safe_print("[2] Thoát ( Mặc định )")
+    choice = input("Chọn [2]: ").strip() or "2"
+    return choice == "1"
+
+
 def main() -> None:
     _safe_print("Downloader bxwx9.org / 笔下文学网")
-    raw_url = input(f"Nhập url [{DEFAULT_URL}]: ").strip()
-    book_info, chapters, book_dir, cover_bytes, cover_ext = _prepare_book_context(raw_url or DEFAULT_URL)
-
     while True:
-        _safe_print("\n-----------------Menu-----------------")
-        _safe_print("[1] Tải toàn bộ (HTML + EPUB) - Default")
-        _safe_print("[2] Tải toàn bộ (HTML/TXT)")
-        _safe_print("[3] Tải từ chương X đến chương Y (HTML + EPUB)")
-        _safe_print("[4] Tạo EPUB từ cache hiện có")
-        _safe_print("[5] Nhập URL truyện mới")
-        _safe_print("[0] Thoát")
-        choice = input("Chọn [1]: ").strip() or "1"
-
+        raw_url = input(f"Nhập Url [{DEFAULT_URL}]: ").strip() or DEFAULT_URL
         try:
-            if choice == "1":
-                save_all_chapters_to_html(book_info["title"], chapters, str(book_dir))
-                build_epub(book_info, chapters, book_dir, cover_bytes=cover_bytes, cover_ext=cover_ext)
-            elif choice == "2":
-                save_all_chapters_to_html(book_info["title"], chapters, str(book_dir))
-                save_txt_from_html(book_info, chapters, str(book_dir))
-            elif choice == "3":
-                start = _ask_int("Chương bắt đầu: ")
-                end = _ask_int("Chương kết thúc: ", len(chapters))
-                save_all_chapters_to_html(book_info["title"], chapters, str(book_dir), start=start, end=end)
-                build_epub(book_info, chapters, book_dir, start=start, end=end, cover_bytes=cover_bytes, cover_ext=cover_ext)
-            elif choice == "4":
-                build_epub(book_info, chapters, book_dir, cover_bytes=cover_bytes, cover_ext=cover_ext)
-            elif choice == "5":
-                raw_url = input("Nhập url mới: ").strip()
-                if not raw_url:
-                    _safe_print("URL trống, giữ nguyên truyện hiện tại.")
-                    continue
-                book_info, chapters, book_dir, cover_bytes, cover_ext = _prepare_book_context(raw_url)
-            elif choice == "0":
-                break
-            else:
-                _safe_print("Lựa chọn không hợp lệ.")
+            book_info, chapters, book_dir, cover_bytes, cover_ext = _prepare_book_context(raw_url)
         except Exception as exc:
             _safe_print(f"Lỗi: {exc}")
+            continue
+
+        while True:
+            _print_download_menu()
+            choice = input("Chọn [1]: ").strip() or "1"
+
+            try:
+                if choice == "1":
+                    save_all_chapters_to_html(book_info["title"], chapters, str(book_dir))
+                    build_epub(book_info, chapters, book_dir, cover_bytes=cover_bytes, cover_ext=cover_ext)
+                    break
+                if choice == "2":
+                    start = _ask_int("Chương bắt đầu: ")
+                    end = _ask_int("Chương kết thúc: ", len(chapters))
+                    start, end = _normalize_range(len(chapters), start, end)
+                    save_all_chapters_to_html(book_info["title"], chapters, str(book_dir), start=start, end=end)
+                    break
+                if choice == "3":
+                    idx = _ask_int("Chương cần tải: ")
+                    idx, _ = _normalize_range(len(chapters), idx, idx)
+                    save_all_chapters_to_html(book_info["title"], chapters, str(book_dir), start=idx, end=idx)
+                    break
+                if choice == "4":
+                    return
+                _safe_print("Lựa chọn không hợp lệ.")
+            except Exception as exc:
+                _safe_print(f"Lỗi: {exc}")
+
+        if not _post_task_menu():
+            return
 
 
 if __name__ == "__main__":

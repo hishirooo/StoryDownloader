@@ -27,6 +27,8 @@ from typing import List, Tuple, Dict, Optional
 
 import requests
 from bs4 import BeautifulSoup, Tag
+from download_logger import chapter_log_line
+from epub_metadata import PUBLISHER, subject_xml
 
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 TIMEOUT  = 25
@@ -372,7 +374,7 @@ def _epub_write(zipf, arcname, data_bytes, compress=True):
 
 def build_epub_from_htmls(epub_out_dir: str, title: str, author: str, html_paths: List[str],
                           cover_bytes=None, cover_ext=None, cover_mime=None, language="vi",
-                          epub_target: str = "epub3", creator="Hishiro") -> str:
+                          epub_target: str = "epub3", creator="Hishiro", tags=None) -> str:
     if not html_paths:
         raise ValueError("Không có file HTML để đóng EPUB.")
 
@@ -501,6 +503,7 @@ def build_epub_from_htmls(epub_out_dir: str, title: str, author: str, html_paths
         navpoints_str      = "\n    ".join(navpoints)
         dt_utc = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         cover_media_item = f'<item id="cover-image" href="{cover_relpath}" media-type="{cover_mime or "image/jpeg"}"/>' if cover_relpath else ""
+        subjects = subject_xml(tags, indent="    ")
 
         if (epub_target or "epub3").lower().strip() == "epub3":
             # nav.xhtml
@@ -534,7 +537,8 @@ def build_epub_from_htmls(epub_out_dir: str, title: str, author: str, html_paths
                 f'    <dc:creator>{html.escape(author)}</dc:creator>\n'
                 '    <dc:language>vi</dc:language>\n'
                 '    <meta name="creator" content="Hishiro"/>\n'
-                f'    <dc:publisher>{html.escape(author or "—")}</dc:publisher>\n'
+                f'    <dc:publisher>{html.escape(PUBLISHER)}</dc:publisher>\n'
+                f'{subjects}'
                 f'    <meta property="dcterms:modified">{dt_utc}</meta>\n'
                 '  </metadata>\n'
                 '  <manifest>\n'
@@ -562,7 +566,8 @@ def build_epub_from_htmls(epub_out_dir: str, title: str, author: str, html_paths
                 f'    <dc:identifier id="BookID">urn:uuid:{_slugify_vi(title)}-{int(time.time())}</dc:identifier>\n'
                 f'    <dc:title>{html.escape(title)}</dc:title>\n'
                 f'    <dc:creator>{html.escape(author)}</dc:creator>\n'
-                f'    <dc:publisher>{html.escape(author or "—")}</dc:publisher>\n'
+                f'    <dc:publisher>{html.escape(PUBLISHER)}</dc:publisher>\n'
+                f'{subjects}'
                 '    <dc:language>vi</dc:language>\n'
                 '    <meta name="cover" content="cover-image"/>\n'
                 '    <meta name="creator" content="Hishiro"/>\n'
@@ -672,10 +677,11 @@ def download_htmls(index_url: str, out_base=DEFAULT_OUT, start=1, end=None, resu
 
     html_paths: List[str] = []
     print(f"⬇️  Tải {end-start+1} chương…")
-    for i, (ctitle, curl) in enumerate(chapters[start-1:end], start=start):
+    selected_total = end - start + 1
+    for done, (i, (ctitle, curl)) in enumerate(enumerate(chapters[start-1:end], start=start), 1):
         save_path = os.path.join(html_dir, f"{i:04d} - {_slugify_vi(ctitle or f'chuong-{i}')}.html")
         if resume and os.path.isfile(save_path):
-            print(f"[{i:04d}] SKIP — {ctitle}")
+            print(chapter_log_line(done, selected_total, "CACHE", i, len(chapters), ctitle or f"Chương {i}"))
             html_paths.append(save_path)
             continue
         try:
@@ -697,9 +703,9 @@ def download_htmls(index_url: str, out_base=DEFAULT_OUT, start=1, end=None, resu
                 content_html = node.decode() if node else ""
             saved = save_chapter_html(html_dir, i, ctitle or f"Chương {i}", content_html)
             html_paths.append(saved)
-            print(f"[{i:04d}] Saved — {ctitle}")
+            print(chapter_log_line(done, selected_total, 200, i, len(chapters), ctitle or f"Chương {i}"))
         except Exception as e:
-            print(f"[{i:04d}] ERROR: {e}")
+            print(chapter_log_line(done, selected_total, "ERR", i, len(chapters), f"{ctitle or f'Chương {i}'} ({e})"))
         time.sleep(SLEEP_BETWEEN_CHAPS)
 
     return html_dir, info, html_paths
@@ -747,7 +753,8 @@ def build_epub(index_url: str, out_base=DEFAULT_OUT, cover_in: Optional[str]=Non
         cover_bytes=cover_bytes,
         cover_ext=cover_ext,
         cover_mime=cover_mime,
-        epub_target="epub3" if epub3 else "epub2"
+        epub_target="epub3" if epub3 else "epub2",
+        tags=info.get("genre"),
     )
     return out_file
 

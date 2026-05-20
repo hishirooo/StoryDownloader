@@ -9,6 +9,8 @@ from bs4 import BeautifulSoup
 from typing import List, Dict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import traceback
+from download_logger import chapter_log_line
+from epub_builder import create_epub
 
 # =============== CẤU HÌNH ===============
 HEADERS = {
@@ -96,17 +98,17 @@ def save_chapter_to_disk(book_dir: str, index: int, chap: Dict, mode: str):
             f.write(_wrap_xhtml(chap['title'], chap['content']))
 
 # ================= MULTI-THREADING ENGINE =================
-def _download_worker(chap: Dict, index: int, book_dir: str, mode: str):
+def _download_worker(chap: Dict, index: int, total: int, book_dir: str, mode: str):
     soup = _fetch_html(chap['url'])
     content = _get_content_chapter(soup) if soup else ""
     
     with print_lock:
         if not content:
-            print(f"  [!] Thất bại: {chap['title']}")
+            print(chapter_log_line(index, total, "ERR", index, total, chap.get("title", "")))
             chap['content'] = "" 
             return False
         else:
-            print(f"  [OK] Đã tải: {chap['title']}")
+            print(chapter_log_line(index, total, 200, index, total, chap.get("title", "")))
             chap['content'] = content
             save_chapter_to_disk(book_dir, index, chap, mode)
             
@@ -120,7 +122,7 @@ def download_manager(book_dir: str, selected_chaps: List[Dict], mode: str):
     print(f"\n🚀 Đang tải song song với {MAX_WORKERS} luồng...")
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {
-            executor.submit(_download_worker, chap, i + 1, book_dir, mode): i 
+            executor.submit(_download_worker, chap, i + 1, len(selected_chaps), book_dir, mode): i 
             for i, chap in enumerate(selected_chaps)
         }
         for future in as_completed(futures):
@@ -139,36 +141,52 @@ def download_manager(book_dir: str, selected_chaps: List[Dict], mode: str):
             if content:
                 chap['content'] = content
                 save_chapter_to_disk(book_dir, i + 1, chap, mode)
-                print(f"  [Fixed] {chap['title']}")
+                print(chapter_log_line(i + 1, len(selected_chaps), 200, i + 1, len(selected_chaps), chap.get("title", "")))
             else:
                 chap['content'] = "<p><i>(Lỗi tải nội dung sau nhiều lần thử)</i></p>"
                 save_chapter_to_disk(book_dir, i + 1, chap, mode)
-                print(f"  [Bỏ qua] {chap['title']} vẫn lỗi.")
+                print(chapter_log_line(i + 1, len(selected_chaps), "ERR", i + 1, len(selected_chaps), f"{chap.get('title', '')} vẫn lỗi"))
 
 def build_epub(book_dir: str, book_info: Dict, chap_list: List[Dict]):
-    title = book_info['title']
-    epub_path = os.path.join(OUTPUT_BASE, f"{_safe_filename(title)}.epub")
-    book_uuid = str(uuid.uuid4())
-    
-    with zipfile.ZipFile(epub_path, 'w') as epub:
-        epub.writestr('mimetype', 'application/epub+zip', compress_type=zipfile.ZIP_STORED)
-        epub.writestr('META-INF/container.xml', '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>')
-        
-        manifest, spine, nav = [], [], []
-        for i, chap in enumerate(chap_list):
-            file_name = f"chap_{i+1:04d}.xhtml"
-            local_path = os.path.join(book_dir, file_name)
-            if os.path.exists(local_path):
-                epub.write(local_path, f"OEBPS/{file_name}")
-                manifest.append(f'<item id="c{i}" href="{file_name}" media-type="application/xhtml+xml"/>')
-                spine.append(f'<itemref idref="c{i}"/>')
-                nav.append(f'<navPoint id="np{i}" playOrder="{i+1}"><navLabel><text>{chap["title"]}</text></navLabel><content src="{file_name}"/></navPoint>')
+    title = book_info.get('title') or 'Unknown'
+    author = book_info.get('author') or 'Unknown'
+    epub_path = os.path.join(OUTPUT_BASE, f"{_safe_filename(title)} _ {_safe_filename(author)}.epub")
 
-        ncx = f'<?xml version="1.0" encoding="UTF-8"?><ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><head><meta name="dtb:uid" content="{book_uuid}"/></head><docTitle><text>{title}</text></docTitle><navMap>{"".join(nav)}</navMap></ncx>'
-        epub.writestr('OEBPS/toc.ncx', ncx)
-        
-        opf = f'<?xml version="1.0" encoding="utf-8"?><package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="id"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dc:title>{title}</dc:title><dc:identifier id="id">{book_uuid}</dc:identifier></metadata><manifest><item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>{"".join(manifest)}</manifest><spine toc="ncx">{"".join(spine)}</spine></package>'
-        epub.writestr('OEBPS/content.opf', opf)
+    chapters = [{"title": chap.get("title") or f"Chương {idx}", "url": chap.get("url", "")} for idx, chap in enumerate(chap_list, 1)]
+    chapters_data = []
+    for idx, chap in enumerate(chap_list, 1):
+        content_html = chap.get("content") or ""
+        if not content_html:
+            local_path = os.path.join(book_dir, f"chap_{idx:04d}.xhtml")
+            if os.path.exists(local_path):
+                soup = BeautifulSoup(open(local_path, "r", encoding="utf-8").read(), "html.parser")
+                body = soup.find("body")
+                if body:
+                    for h in body.find_all(["h1", "h2"]):
+                        h.decompose()
+                    content_html = str(body)
+        chapters_data.append({
+            "title": chap.get("title") or f"Chương {idx}",
+            "content_html": content_html or "<p>(Không có nội dung)</p>",
+            "url": chap.get("url", ""),
+        })
+
+    meta = dict(book_info)
+    meta.setdefault("author", author)
+    meta.setdefault("intro", book_info.get("introduction", ""))
+
+    create_epub(
+        book_url=book_info.get("url", ""),
+        book_title=title,
+        author=author,
+        chapters=chapters,
+        fetch_fn=None,
+        language="zh-CN",
+        out_epub_path=epub_path,
+        chapters_data=chapters_data,
+        tags=book_info.get("category") or book_info.get("genre") or book_info.get("tags"),
+        book_info=meta,
+    )
     print(f"\n✔ Đã tạo file EPUB thành công: {epub_path}")
 
 # ================= CHƯƠNG TRÌNH CHÍNH =================

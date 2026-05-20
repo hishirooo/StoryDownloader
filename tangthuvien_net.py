@@ -33,6 +33,7 @@ from urllib.parse import urlparse, urlunparse, urljoin
 import requests, ssl, urllib3, re, json, html, os, unicodedata, zipfile, io, datetime, shutil
 
 from requests.adapters import HTTPAdapter
+from epub_metadata import subject_xml
 from urllib3.util import Retry
 
 # ====================== CẤU HÌNH ======================
@@ -739,6 +740,7 @@ def _make_nav_xhtml(book_title: str, nav_items: List[Tuple[str, str]]) -> bytes:
 
 def _make_opf(book_title: str, author: str, items: List[Tuple[str, str]],
               publisher: str = "Hishiro",
+              tags=None,
               cover_image_href: Optional[str] = None,
               cover_media_type: Optional[str] = None,
               cover_page_href: Optional[str] = None,
@@ -786,6 +788,7 @@ def _make_opf(book_title: str, author: str, items: List[Tuple[str, str]],
 
     # Metadata phụ — giữ meta name="cover" để Kobo chắc chắn nhận bìa
     extra_meta = ""
+    extra_meta += subject_xml(tags)
     if cover_image_href:
         extra_meta += '    <meta name="cover" content="cover-image"/>\n'
 
@@ -847,7 +850,7 @@ def _make_ncx(book_title: str, items: List[Tuple[str, str, str]]) -> bytes:
 # ====================== TẠO EPUB ======================
 
 def create_epub_from_html(book_title: str, author: str, out_dir: str, logger: Logger,
-                          cover_path: Optional[str]) -> str:
+                          cover_path: Optional[str], tags=None) -> str:
     """Gom các *.xhtml/*.html trong out_dir -> tạo EPUB (cover nếu có).
        EPUB lưu ở OUTPUT_ROOT (không trong thư mục truyện)."""
     ext = ".xhtml" if SAVE_AS_XHTML else ".html"
@@ -924,6 +927,7 @@ def create_epub_from_html(book_title: str, author: str, out_dir: str, logger: Lo
             _make_opf(
                 book_title, author, item_list,
                 publisher="Hishiro",
+                tags=tags,
                 cover_image_href=(f"Images/{cover_img_filename}" if cover_img_filename else None),
                 cover_media_type=cover_media_type,
                 cover_page_href=cover_page_href,
@@ -936,7 +940,7 @@ def create_epub_from_html(book_title: str, author: str, out_dir: str, logger: Lo
     return epub_path
 
 def create_epub_from_txt(book_title: str, author: str, out_dir: str, logger: Logger,
-                         cover_path: Optional[str]) -> str:
+                         cover_path: Optional[str], tags=None) -> str:
     """Đọc *.txt → bọc XHTML tối giản → EPUB (có cover nếu cung cấp)."""
     files = [f for f in os.listdir(out_dir) if f.lower().endswith(".txt")]
     files.sort()
@@ -959,7 +963,7 @@ def create_epub_from_txt(book_title: str, author: str, out_dir: str, logger: Log
             fp.write(xhtml_wrap(chap_title, content_html))
 
     # Sau khi bọc XHTML, dùng pipeline HTML để tạo EPUB
-    epub_path = create_epub_from_html(book_title, author, out_dir, logger, cover_path)
+    epub_path = create_epub_from_html(book_title, author, out_dir, logger, cover_path, tags=tags)
     return epub_path
 
 # ====================== QUY TRÌNH THEO MODE ======================
@@ -997,6 +1001,7 @@ def main():
     meta = getinfo(StoryUrl)
     book_title = meta["info"].get("title") or "Truyen"
     author     = meta["info"].get("author") or "Unknown"
+    genre      = meta["info"].get("genre") or ""
     chapters   = meta["chapters"]
 
     out_dir = make_book_dir(book_title)
@@ -1013,15 +1018,15 @@ def main():
     elif mode == "3":
         download_all(chapters, out_dir, logger, True,  False)
         print("Tạo EPUB từ file HTML...")
-        create_epub_from_html(book_title, author, out_dir, logger, cover_path)
+        create_epub_from_html(book_title, author, out_dir, logger, cover_path, tags=genre)
     elif mode == "4":
         download_all(chapters, out_dir, logger, False, True)
         print("Tạo EPUB từ file TXT...")
-        create_epub_from_txt(book_title, author, out_dir, logger, cover_path)
+        create_epub_from_txt(book_title, author, out_dir, logger, cover_path, tags=genre)
     elif mode == "5":
         download_all(chapters, out_dir, logger, True,  True)
         print("Tạo EPUB từ file HTML...")
-        create_epub_from_html(book_title, author, out_dir, logger, cover_path)
+        create_epub_from_html(book_title, author, out_dir, logger, cover_path, tags=genre)
     else:
         print("Mode không hợp lệ. Vui lòng chọn 1..5.")
 

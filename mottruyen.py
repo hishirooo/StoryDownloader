@@ -6,7 +6,7 @@ mottruyen_downloader.py
 Tải truyện từ mottruyen.com.vn và build EPUB.
 
 Cài:
-    pip install requests beautifulsoup4 ebooklib lxml cloudscraper
+    pip install requests beautifulsoup4 lxml cloudscraper
 
 Dùng:
     python mottruyen_downloader.py "https://mottruyen.com.vn/novel-tho-san-muon-song-an-dat/42612"
@@ -33,8 +33,10 @@ try:
     import bs4
     import cloudscraper
 except ImportError:
-    os.system("pip install requests beautifulsoup4 ebooklib lxml cloudscraper")
-from ebooklib import epub
+    os.system("pip install requests beautifulsoup4 lxml cloudscraper")
+    import bs4
+    import cloudscraper
+from epub_builder import create_epub
 
 
 # =========================
@@ -519,89 +521,55 @@ class EpubBuilder:
         except Exception:
             return None
 
+    @staticmethod
+    def _cover_ext(cover_bytes: Optional[bytes], cover_url: Optional[str]) -> str:
+        if cover_bytes:
+            if cover_bytes.startswith(b"\x89PNG"):
+                return ".png"
+            if cover_bytes.startswith(b"GIF87a") or cover_bytes.startswith(b"GIF89a"):
+                return ".gif"
+            if cover_bytes[:12].startswith(b"RIFF") and cover_bytes[8:12] == b"WEBP":
+                return ".webp"
+        ext = Path(urlparse(cover_url or "").path).suffix.lower()
+        return ext if ext in {".jpg", ".jpeg", ".png", ".webp", ".gif"} else ".jpg"
+
     def build(
         self,
         meta: BookMeta,
         chapters_data: List[Tuple[Chapter, str, str]],
         cover_bytes: Optional[bytes] = None,
     ) -> Path:
-        book = epub.EpubBook()
-
-        book_id = slugify(meta.title)
-        book.set_identifier(book_id)
-        book.set_title(meta.title)
-        book.set_language("vi")
-        book.add_author(meta.author or "Unknown")
-
-        if meta.description:
-            book.add_metadata("DC", "description", meta.description)
-        if meta.status:
-            book.add_metadata("DC", "subject", f"Status: {meta.status}")
-        for tag in meta.tags:
-            book.add_metadata("DC", "subject", tag)
-
-        if cover_bytes:
-            book.set_cover("cover.jpg", cover_bytes)
-
-        # CSS
-        style = """
-        body { font-family: serif; line-height: 1.6; }
-        h1, h2 { text-align: center; }
-        p { margin: 0 0 0.8em 0; text-indent: 1.5em; }
-        """
-        nav_css = epub.EpubItem(
-            uid="style_nav",
-            file_name="style/nav.css",
-            media_type="text/css",
-            content=style.encode("utf-8"),
-        )
-        book.add_item(nav_css)
-
-        # intro page
-        intro_html = f"""
-        <html>
-        <head><title>{html.escape(meta.title)}</title></head>
-        <body>
-            <h1>{html.escape(meta.title)}</h1>
-            <p><strong>Tác giả:</strong> {html.escape(meta.author or "Unknown")}</p>
-            <p><strong>Trạng thái:</strong> {html.escape(meta.status or "")}</p>
-            <p><strong>Thể loại:</strong> {html.escape(", ".join(meta.tags))}</p>
-            <hr/>
-            <p>{html.escape(meta.description or "")}</p>
-        </body>
-        </html>
-        """
-        intro = epub.EpubHtml(title="Giới thiệu", file_name="intro.xhtml", lang="vi")
-        intro.content = intro_html
-        intro.add_item(nav_css)
-        book.add_item(intro)
-
-        epub_chapters = [intro]
-
-        for idx, (chapter, title, content_html) in enumerate(chapters_data, start=1):
-            file_name = f"chap_{idx:04d}.xhtml"
-            ch = epub.EpubHtml(title=title, file_name=file_name, lang="vi")
-            ch.content = f"""
-            <html>
-            <head><title>{html.escape(title)}</title></head>
-            <body>
-                <h2>{html.escape(title)}</h2>
-                {content_html}
-            </body>
-            </html>
-            """
-            ch.add_item(nav_css)
-            book.add_item(ch)
-            epub_chapters.append(ch)
-
-        book.toc = tuple(epub_chapters)
-        book.add_item(epub.EpubNcx())
-        book.add_item(epub.EpubNav())
-        book.spine = ["nav"] + epub_chapters
-
         out_name = safe_filename(meta.title) + ".epub"
         out_path = self.output_dir / out_name
-        epub.write_epub(str(out_path), book, {})
+
+        chapters = [{"title": title, "url": chapter.url} for chapter, title, _content_html in chapters_data]
+        items = [
+            {"title": title, "content_html": content_html, "url": chapter.url}
+            for chapter, title, content_html in chapters_data
+        ]
+        book_info = {
+            "title": meta.title,
+            "author": meta.author or "Unknown",
+            "description": meta.description or "",
+            "status": meta.status or "",
+            "tags": meta.tags,
+            "cover_url": meta.cover_url or "",
+        }
+
+        create_epub(
+            book_url="",
+            book_title=meta.title,
+            author=meta.author or "Unknown",
+            chapters=chapters,
+            fetch_fn=None,
+            cover_bytes=cover_bytes,
+            cover_ext=self._cover_ext(cover_bytes, meta.cover_url),
+            language="vi",
+            out_epub_path=str(out_path),
+            chapters_data=items,
+            tags=meta.tags,
+            book_info=book_info,
+        )
         return out_path
 
 

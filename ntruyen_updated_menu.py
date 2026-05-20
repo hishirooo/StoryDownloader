@@ -25,9 +25,11 @@ from typing import Optional, List, Dict, Tuple
 from pathlib import Path
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, urlunparse
+from download_logger import chapter_log_line
 import requests
 import re
 import json
+from epub_metadata import subject_xml
 import os
 import unicodedata
 import zipfile
@@ -225,6 +227,7 @@ def create_epub_epub3_for_kobo(
     cover_mime: Optional[str] = None,
     language: str = LANGUAGE,
     publisher: str = PUBLISHER,
+    tags=None,
 ) -> str:
     """
     Đóng gói EPUB3 thủ công.
@@ -330,6 +333,7 @@ def create_epub_epub3_for_kobo(
         # 6) content.opf
         uid = _slugify_vi(book_title) + "-id"
         now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        subjects = subject_xml(tags, indent="  ")
 
         metadata = (
             f'<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">\n'
@@ -338,6 +342,7 @@ def create_epub_epub3_for_kobo(
             f'  <dc:language>{_html.escape(language)}</dc:language>\n'
             f'  <dc:creator>{_html.escape(author or "Unknown")}</dc:creator>\n'
             f'  <dc:publisher>{_html.escape(publisher)}</dc:publisher>\n'
+            f'{subjects}'
             f'  <meta property="dcterms:modified">{_html.escape(now_iso)}</meta>\n'
         )
         if cover_item_line:
@@ -735,14 +740,13 @@ def download_and_build_epub_ntruyen(
     _ensure_dir(xhtml_dir)
 
     items = []
+    total_chapters = len(chapters)
     for idx, chap in enumerate(chapters, 1):
         chap_id = int(chap["id"])
         chap_slug = str(chap.get("slug") or "").strip()
         chap_title = str(chap.get("name") or f"Chương {idx}").strip()
 
         chapter_url = make_chapter_url(doc_base_url, chap_slug, chap_id)
-        print(f"[{idx:04d}] GET {chapter_url}")
-
         content_html = ""
         last_err = None
         for attempt in range(1, 4):
@@ -756,7 +760,7 @@ def download_and_build_epub_ntruyen(
                 time.sleep(1.0 * attempt)
 
         if not content_html:
-            print(f"  -> ⚠ Bỏ qua chương {idx} do lỗi: {last_err}")
+            print(chapter_log_line(idx, total_chapters, "ERR", idx, total_chapters, f"{chap_title} ({last_err})"))
             continue
 
         xhtml = make_chapter_xhtml(chap_title, content_html)
@@ -767,6 +771,7 @@ def download_and_build_epub_ntruyen(
         with open(fn, "w", encoding="utf-8") as f:
             f.write(xhtml)
 
+        print(chapter_log_line(idx, total_chapters, 200, idx, total_chapters, chap_title))
         time.sleep(sleep_between_chaps)
 
     if not items:

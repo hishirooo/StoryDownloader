@@ -11,6 +11,8 @@ from bs4 import BeautifulSoup
 from typing import Optional, List, Dict
 from urllib.parse import urljoin
 import requests, re, html, os, unicodedata, zipfile, time, datetime as dt
+from download_logger import chapter_log_line
+from epub_metadata import PUBLISHER, subject_xml
 
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 TIMEOUT = 20
@@ -353,11 +355,11 @@ def save_all_chapters_to_html(book_title: str, chapters: list, out_dir: str) -> 
             if not chap.get("title"):
                 chap["title"] = info.get("title")
             p = save_chapter_html(book_title, i, chap, out_dir)
-            print(f"[{i:04d}/{n}] Saved HTML: {p}", flush=True)
+            print(chapter_log_line(i, n, chap.get("status_code", 200), i, n, chap.get("title") or info.get("title") or ""), flush=True)
             saved.append(p)
             time.sleep(SLEEP_BETWEEN_CHAPS)
         except Exception as e:
-            print(f"[{i:04d}/{n}] ERROR {info.get('url')}: {e}", flush=True)
+            print(chapter_log_line(i, n, "ERR", i, n, f"{info.get('title') or info.get('url')} ({e})"), flush=True)
 
     return saved
 
@@ -437,6 +439,7 @@ def build_epub2_from_htmls(
     cover_bytes: Optional[bytes] = None,
     cover_ext: Optional[str] = None,
     cover_mime: Optional[str] = None,
+    genre: Optional[str] = None,
 ) -> str:
     os.makedirs(out_dir, exist_ok=True)
     out_file = os.path.join(out_dir, f"{_slugify_vi(book_title)}.epub")
@@ -453,6 +456,7 @@ def build_epub2_from_htmls(
 
     book_id = f"urn:uuid:{_slugify_vi(book_title)}-{int(time.time())}"
     cover_href = f"images/cover{cover_ext}" if cover_bytes and cover_ext else None
+    subjects = subject_xml(genre, indent="    ")
 
     with zipfile.ZipFile(out_file, "w") as z:
         _epub_write(z, "mimetype", b"application/epub+zip", compress=False)
@@ -548,6 +552,8 @@ def build_epub2_from_htmls(
     <dc:language>vi</dc:language>
     <dc:identifier id="BookId">{book_id}</dc:identifier>
     <dc:date>{dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")}</dc:date>
+    <dc:publisher>{html.escape(PUBLISHER)}</dc:publisher>
+{subjects.rstrip()}
     <meta name="cover" content="cover-image"/>
   </metadata>""" if cover_href else f"""
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
@@ -556,6 +562,8 @@ def build_epub2_from_htmls(
     <dc:language>vi</dc:language>
     <dc:identifier id="BookId">{book_id}</dc:identifier>
     <dc:date>{dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")}</dc:date>
+    <dc:publisher>{html.escape(PUBLISHER)}</dc:publisher>
+{subjects.rstrip()}
   </metadata>"""
 
         opf = f"""<?xml version="1.0" encoding="utf-8"?>
@@ -621,6 +629,7 @@ def download_html_and_build_epub2(story_url: str):
         cover_bytes=cover_bytes,
         cover_ext=cover_ext,
         cover_mime=cover_mime,
+        genre=genre,
     )
 
     print("\n------------------- DONE -------------------")

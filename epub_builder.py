@@ -4,10 +4,12 @@ epub_builder: Module chung để đóng gói EPUB2 đơn giản.
 PHIÊN BẢN TỐI ƯU: Không tải trùng, hỗ trợ cache từ HTML/dict
 """
 from datetime import datetime, timezone
+from uuid import uuid4
 import zipfile, html, time, re, os, json, sys
-from typing import Callable, List, Dict, Optional, Union
+from typing import Any, Callable, List, Dict, Optional, Union
 from pathlib import Path
 from bs4 import BeautifulSoup
+from epub_metadata import PUBLISHER, normalize_tags, subject_xml
 
 def _epub_write(zipf, arcname, data_bytes, compress=True):
     zinfo = zipfile.ZipInfo(arcname)
@@ -39,6 +41,71 @@ def _safe_print(message: str) -> None:
             sys.stdout.write(message + "\n")
         except Exception:
             pass
+
+
+def _cover_media_type(ext: str) -> str:
+    ext = (ext or ".jpg").lower()
+    if ext == ".jpeg":
+        ext = ".jpg"
+    return {
+        ".jpg": "image/jpeg",
+        ".png": "image/png",
+        ".webp": "image/webp",
+        ".gif": "image/gif",
+    }.get(ext, "image/jpeg")
+
+
+def _xhtml_page(title: str, body_html: str, *, language: str = "vi", css_href: str = "../Styles/style.css") -> str:
+    return f"""<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="{html.escape(language)}" lang="{html.escape(language)}">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+  <title>{html.escape(title)}</title>
+  <link rel="stylesheet" type="text/css" href="{css_href}"/>
+</head>
+<body>
+{body_html}
+</body>
+</html>
+"""
+
+
+def _first_text(info: Dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = info.get(key)
+        if isinstance(value, (list, tuple, set)):
+            value = ", ".join(str(item) for item in value if item)
+        if value:
+            return re.sub(r"\s+", " ", html.unescape(str(value))).strip()
+    return ""
+
+
+def _intro_html(book_info: Dict[str, Any], *, tags: Optional[Any] = None) -> str:
+    title = _first_text(book_info, "title", "name") or "Truyen"
+    author = _first_text(book_info, "author", "creator") or "Unknown"
+    team = _first_text(book_info, "artist", "team", "translator", "editor")
+    status = _first_text(book_info, "status")
+    categories = ", ".join(normalize_tags(tags if tags is not None else book_info))
+    intro = _first_text(book_info, "intro", "description", "desc", "summary", "synopsis", "introduction")
+
+    lines = [
+        f"<h1>{html.escape(title)}</h1>",
+        f'<p class="meta"><strong>Tác giả:</strong> {html.escape(author)}</p>',
+    ]
+    if team:
+        lines.append(f'<p class="meta"><strong>Nhóm dịch:</strong> {html.escape(team)}</p>')
+    if status:
+        lines.append(f'<p class="meta"><strong>Trạng thái:</strong> {html.escape(status)}</p>')
+    if categories:
+        lines.append(f'<p class="meta"><strong>Thể loại:</strong> {html.escape(categories)}</p>')
+    if intro:
+        lines.append("<hr/>")
+        for raw_line in str(intro).splitlines():
+            line = re.sub(r"\s+", " ", html.unescape(raw_line)).strip()
+            if line:
+                lines.append(f'<p class="intro">{html.escape(line)}</p>')
+    return "\n".join(lines)
 
 
 def _normalize_xhtml_fragment(html_fragment: str) -> str:
@@ -109,10 +176,14 @@ def create_epub(book_url: str,
                 cover_ext: str=".jpg",
                 language: str="vi",
                 creator: str="Hishiro",
+                publisher: str=PUBLISHER,
+                tags: Optional[Any]=None,
                 sleep: float=0.12,
                 out_epub_path: Optional[str]=None,
                 html_cache_dir: Optional[str]=None,
-                chapters_data: Optional[List[Dict]]=None):
+                chapters_data: Optional[List[Dict]]=None,
+                book_info: Optional[Dict[str, Any]]=None,
+                intro: Optional[str]=None):
     """
     Tạo EPUB từ danh sách chapters.
     
@@ -130,10 +201,6 @@ def create_epub(book_url: str,
     book_title = book_title or "Truyện"
     author = author or "–"
 
-    _safe_print(f"\n{'='*60}")
-    _safe_print(f"BAT DAU TAO EPUB: {book_title}")
-    _safe_print(f"{'='*60}")
-
     # Thu thập nội dung các chương
     items = []
     
@@ -144,7 +211,6 @@ def create_epub(book_url: str,
         # ========== ƯU TIÊN 1: Dùng chapters_data nếu có ==========
         if chapters_data and idx <= len(chapters_data):
             c = chapters_data[idx - 1]
-            _safe_print(f"[INFO] [{idx:04d}] Su dung du lieu da tai tu chapters_data: {c.get('title', chapter_title)}")
             c["title"] = _normalize_title(c["title"])
             items.append(c)
             continue
@@ -197,25 +263,29 @@ def create_epub(book_url: str,
         else:
             fetched_new_count += 1
 
-    _safe_print(f"\n{'='*60}")
-    _safe_print(f"TONG KET:")
-    _safe_print(f"   - Tong so chuong da xu ly: {len(items)}")
-    _safe_print(f"   - Doc tu cache HTML: {used_cache_count}")
-    _safe_print(f"   - Tai moi tu internet: {fetched_new_count}")
-    _safe_print(f"{'='*60}\n")
+    info_for_intro: Dict[str, Any] = dict(book_info or {})
+    subject_source = tags if tags is not None else info_for_intro
+    info_for_intro.setdefault("title", book_title)
+    info_for_intro.setdefault("author", author)
+    info_for_intro.setdefault("url", book_url or "")
+    if intro and not _first_text(info_for_intro, "intro", "description", "desc", "summary", "synopsis", "introduction"):
+        info_for_intro["intro"] = intro
 
-    # Xử lý cover
-    cover_name = None
-    if cover_bytes:
-        ext = (cover_ext or ".jpg").lower()
-        if ext not in (".jpg", ".jpeg", ".png"):
-            ext = ".jpg"
-        cover_name = "Images/cover" + ext
+    cover_ext = (cover_ext or ".jpg").lower()
+    if cover_ext == ".jpeg":
+        cover_ext = ".jpg"
+    if cover_ext not in (".jpg", ".png", ".webp", ".gif"):
+        cover_ext = ".jpg"
+    has_cover = bool(cover_bytes)
+    cover_name = f"Images/cover{cover_ext}"
+    cover_media = _cover_media_type(cover_ext)
 
-    # Đường dẫn EPUB đầu ra
     out_path = out_epub_path or (_safe_fs_name(book_title) + ".epub")
+    out_parent = Path(out_path).parent
+    if str(out_parent) not in ("", "."):
+        out_parent.mkdir(parents=True, exist_ok=True)
 
-    _safe_print(f"[EPUB] Dang tao file EPUB: {out_path}")
+    _safe_print(f"[Epub] Đang đóng gói EPUB: {out_path}")
 
     with zipfile.ZipFile(out_path, "w") as z:
         # 1) mimetype
@@ -233,87 +303,113 @@ def create_epub(book_url: str,
         _epub_write(z, "META-INF/container.xml", container_xml)
 
         # 3) Styles
-        style_css = (
-            "body{font-family:serif;line-height:1.6} "
-            "img{max-width:100%;height:auto} "
-            "h1{font-size:1.4em;margin:0 0 .6em} "
-            "p{margin:.5em 0}"
-        )
+        style_css = """
+body { font-family: serif; line-height: 1.75; margin: 5%; }
+h1 { font-size: 1.35em; line-height: 1.35; margin: 0 0 1em; text-align: center; }
+p { margin: 0.65em 0; text-indent: 2em; }
+.meta, .intro { text-indent: 0; }
+.cover { text-align: center; margin: 0; text-indent: 0; }
+.cover img { max-width: 100%; max-height: 95vh; height: auto; }
+hr { border: 0; border-top: 1px solid #ddd; margin: 1em 0; }
+""".strip()
         _epub_write(z, "OEBPS/Styles/style.css", style_css.encode("utf-8"))
 
         # 4) Text/*.xhtml + manifest/spine/navpoints
-        manifest_items = []
-        spine_items = []
-        navpoints = []
+        manifest_items = [
+            '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>',
+            '<item id="style" href="Styles/style.css" media-type="text/css"/>',
+            '<item id="titlepage" href="Text/title.xhtml" media-type="application/xhtml+xml"/>',
+        ]
+        spine_items = ['<itemref idref="titlepage"/>']
+        navpoints = [
+            '<navPoint id="nav-title" playOrder="1"><navLabel><text>Giới thiệu</text></navLabel>'
+            '<content src="Text/title.xhtml"/></navPoint>'
+        ]
+        play_order = 2
+
+        if has_cover:
+            manifest_items.append(f'<item id="cover-image" href="{cover_name}" media-type="{cover_media}"/>')
+            manifest_items.append('<item id="cover" href="Text/cover.xhtml" media-type="application/xhtml+xml"/>')
+            spine_items.insert(0, '<itemref idref="cover"/>')
+            navpoints.insert(
+                0,
+                '<navPoint id="nav-cover" playOrder="1"><navLabel><text>Cover</text></navLabel>'
+                '<content src="Text/cover.xhtml"/></navPoint>',
+            )
+            navpoints[1] = navpoints[1].replace('playOrder="1"', 'playOrder="2"')
+            play_order = 3
+
         for i, c in enumerate(items, 1):
             fn = f"Text/chapter_{i:04d}.xhtml"
-            xhtml = (
-                '<?xml version="1.0" encoding="utf-8"?>\n'
-                '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN"\n'
-                ' "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">\n'
-                '<html xmlns="http://www.w3.org/1999/xhtml">\n<head>\n'
-                '<meta http-equiv="Content-Type" content="application/xhtml+xml; charset=utf-8"/>\n'
-                '<link rel="stylesheet" type="text/css" href="../Styles/style.css"/>\n'
-                f"<title>{html.escape(c['title'])}</title>\n</head>\n<body>\n"
+            xhtml = _xhtml_page(
+                c["title"],
                 f"<h1>{html.escape(c['title'])}</h1>\n"
-                f"{_normalize_xhtml_fragment(c.get('content_html') or '<p>(Không có nội dung)</p>')}\n"
-                "</body></html>"
+                f"{_normalize_xhtml_fragment(c.get('content_html') or '<p>(Không có nội dung)</p>')}",
+                language=language,
             ).encode("utf-8")
             _epub_write(z, "OEBPS/" + fn, xhtml)
             manifest_items.append(f'<item id="chap{i}" href="{fn}" media-type="application/xhtml+xml"/>')
             spine_items.append(f'<itemref idref="chap{i}"/>')
             navpoints.append(
-                f'<navPoint id="nav{i}" playOrder="{i}">'
+                f'<navPoint id="nav{i}" playOrder="{play_order}">'
                 f'<navLabel><text>{html.escape(c["title"])}</text></navLabel>'
                 f'<content src="{fn}"/></navPoint>'
             )
+            play_order += 1
 
-        # 5) Cover (nếu có)
-        manifest_cover = ""
-        meta_cover = ""
-        if cover_bytes and cover_name:
+        _epub_write(z, "OEBPS/Text/title.xhtml", _xhtml_page(book_title, _intro_html(info_for_intro, tags=subject_source), language=language))
+
+        if has_cover:
             _epub_write(z, "OEBPS/" + cover_name, cover_bytes)
-            ctype = "image/png" if cover_name.lower().endswith(".png") else "image/jpeg"
-            manifest_cover = f'<item id="cover" href="{cover_name}" media-type="{ctype}" properties="cover-image"/>'
-            meta_cover = '<meta name="cover" content="cover"/>'
+            cover_body = f'<p class="cover"><img src="../{cover_name}" alt="{html.escape(book_title)}"/></p>'
+            _epub_write(z, "OEBPS/Text/cover.xhtml", _xhtml_page("Cover", cover_body, language=language))
 
         # 6) content.opf
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        content_opf = (
-            '<?xml version="1.0" encoding="utf-8"?>\n'
-            '<package version="2.0" unique-identifier="BookId" xmlns="http://www.idpf.org/2007/opf">\n'
-            '  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">\n'
-            f'    <dc:title>{html.escape(book_title)}</dc:title>\n'
-            f'    <dc:creator>{html.escape(creator)}</dc:creator>\n'
-            f'    <dc:language>{language}</dc:language>\n'
-            f'    <dc:date>{now}</dc:date>\n'
-            f'    <dc:publisher>{html.escape(author)}</dc:publisher>\n'
-            f'    <dc:source>{html.escape(book_url or "")}</dc:source>\n'
-            f'    {meta_cover}\n'
-            '  </metadata>\n'
-            '  <manifest>\n'
-            '    <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>\n'
-            '    <item id="css" href="Styles/style.css" media-type="text/css"/>\n'
-            f'    {manifest_cover}\n'
-            f'    {"".join(manifest_items)}\n'
-            '  </manifest>\n'
-            '  <spine toc="ncx">\n'
-            f'    {"".join(spine_items)}\n'
-            '  </spine>\n'
-            '</package>'
-        ).encode("utf-8")
+        uid = f"urn:uuid:{uuid4()}"
+        now = datetime.now(timezone.utc)
+        modified = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+        subjects = subject_xml(subject_source)
+        meta_cover = '<meta name="cover" content="cover-image"/>' if has_cover else ""
+        guide_cover = '<guide><reference type="cover" title="Cover" href="Text/cover.xhtml"/></guide>' if has_cover else ""
+        content_opf = f"""<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="2.0" unique-identifier="BookId">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+    <dc:identifier id="BookId">{html.escape(uid)}</dc:identifier>
+    <dc:title>{html.escape(book_title)}</dc:title>
+    <dc:creator opf:role="aut">{html.escape(author)}</dc:creator>
+    <dc:publisher>{html.escape(publisher)}</dc:publisher>
+{subjects}    <dc:language>{html.escape(language)}</dc:language>
+    <dc:source>{html.escape(book_url or "")}</dc:source>
+    <dc:date>{now.strftime("%Y-%m-%d")}</dc:date>
+    <dc:contributor>{html.escape(creator)}</dc:contributor>
+    <meta name="dcterms:modified" content="{modified}"/>
+    {meta_cover}
+  </metadata>
+  <manifest>
+    {"".join(manifest_items)}
+  </manifest>
+  <spine toc="ncx">
+    {"".join(spine_items)}
+  </spine>
+  {guide_cover}
+</package>
+""".encode("utf-8")
         _epub_write(z, "OEBPS/content.opf", content_opf)
 
         # 7) toc.ncx
-        toc = (
-            '<?xml version="1.0" encoding="utf-8"?>\n'
-            '<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">\n'
-            '  <head><meta name="dtb:uid" content="id"/></head>\n'
-            f'  <docTitle><text>{html.escape(book_title)}</text></docTitle>\n'
-            f'  <navMap>{"".join(navpoints)}</navMap>\n'
-            '</ncx>'
-        ).encode("utf-8")
+        toc = f"""<?xml version="1.0" encoding="utf-8"?>
+<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">
+  <head>
+    <meta name="dtb:uid" content="{html.escape(uid)}"/>
+    <meta name="dtb:depth" content="1"/>
+    <meta name="dtb:totalPageCount" content="0"/>
+    <meta name="dtb:maxPageNumber" content="0"/>
+  </head>
+  <docTitle><text>{html.escape(book_title)}</text></docTitle>
+  <navMap>{"".join(navpoints)}</navMap>
+</ncx>
+""".encode("utf-8")
         _epub_write(z, "OEBPS/toc.ncx", toc)
 
-    _safe_print(f"HOAN THANH! File EPUB: {out_path}\n")
+    _safe_print(f"[Epub] Đã tạo xong EPUB: {out_path}")
     return out_path

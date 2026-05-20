@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os, re, html, unicodedata, ssl, time, random
 from typing import List, Dict, Optional, Tuple, Set
+from download_logger import chapter_log_line
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -702,7 +703,8 @@ def save_all_chapters_to_html(
     idx_items = []
     # pad = len(str(len(chapters)))  # << BỎ DÒNG NÀY ĐI
 
-    for i, ch in enumerate(subset, start=s + 1):
+    selected_total = len(subset)
+    for done, (i, ch) in enumerate(enumerate(subset, start=s + 1), 1):
         info = get_chapter(ch["url"])
         fname = f"{i:04d}.html"  # << SỬA LẠI DÒNG NÀY ĐỂ LUÔN CÓ 4 CHỮ SỐ
         fpath = os.path.join(out_dir, fname)
@@ -726,7 +728,7 @@ h1{{font-size:1.6rem;margin:0 0 1rem}}
             f.write(html_doc)
 
         idx_items.append(f'<li><a href="{fname}">' + html.escape(info["title"]) + "</a></li>")
-        print(f"✔ Saved: {fname} — {info['title']}")
+        print(chapter_log_line(done, selected_total, info.get("status_code", 200), i, len(chapters), info.get("title") or ch.get("title") or ""))
 
     index_html = f"""<!doctype html>
 <html lang=\"vi\">

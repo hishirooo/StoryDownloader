@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 import requests
 from bs4 import BeautifulSoup, Tag, NavigableString, Comment
+from download_logger import chapter_log_line
+from epub_metadata import subject_xml
 # Pillow (cover)
 try:
     from PIL import Image
@@ -270,8 +272,6 @@ def _get_content_chapters(chap_list: List[Dict[str, str]],
 
     total = len(chap_list)
     results: List[Tuple[int, str, str]] = []
-    pad = max(3, len(str(total)))
-
     print(f"\n--- Bắt đầu tải {total} chương ---")
     
     for i, chap in enumerate(chap_list, start=1):
@@ -292,13 +292,13 @@ def _get_content_chapters(chap_list: List[Dict[str, str]],
                 f.write(xhtml)
             
             # Log sử dụng tiêu đề sạch
-            print(f"[{str(i).zfill(pad)}/{str(total).zfill(pad)}] Saved - {clean_title} - {fpath}")
+            print(chapter_log_line(i, total, 200, i, total, clean_title))
             
             # Trả về clean_title và XHTML
             results.append((i, clean_title, xhtml))
             time.sleep(SLEEP_BETWEEN_CHAPS)
         except Exception as e:
-            print(f"[{str(i).zfill(pad)}/{str(total).zfill(pad)}] ❌ Lỗi lấy '{raw_title}' ({url}): {e}")
+            print(chapter_log_line(i, total, "ERR", i, total, f"{raw_title} ({e})"))
     return results
 
 
@@ -382,7 +382,7 @@ def _epub_write(zipf, arcname, data_bytes, compress=True):
 
 def create_epub_epub3_for_kobo(book_title: str, author: str, items: list,
                                out_epub_dir: str, cover_bytes=None, cover_ext=None, cover_mime=None,
-                               language="vi", publisher="Hishiro"):
+                               language="vi", publisher="Hishiro", tags=None):
     """Hàm đóng gói EPUB thủ công, lấy từ bububaoboi.py"""
     os.makedirs(out_epub_dir, exist_ok=True)
     out_file = os.path.join(out_epub_dir, f"{_slugify_vi(book_title)}.epub")
@@ -494,6 +494,7 @@ def create_epub_epub3_for_kobo(book_title: str, author: str, items: list,
 
         # 7) content.opf (EPUB3, publisher = Hishiro)
         dt_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        subjects = subject_xml(tags, indent="    ")
         manifest_str = "\n    ".join([
             '<item id="css" href="Styles/style.css" media-type="text/css"/>',
             '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>',
@@ -509,6 +510,7 @@ def create_epub_epub3_for_kobo(book_title: str, author: str, items: list,
             f'    <dc:title>{html.escape(book_title)}</dc:title>\n'
             f'    <dc:creator>{html.escape(author or "—")}</dc:creator>\n'
             f'    <dc:publisher>{html.escape(publisher)}</dc:publisher>\n'
+            f'{subjects}'
             f'    <dc:language>{language}</dc:language>\n'
             f'    <meta property="dcterms:modified">{dt_utc}</meta>\n'
             '  </metadata>\n'
@@ -580,7 +582,8 @@ def download_and_build_epub(url_story: str):
         cover_ext=cover_ext,
         cover_mime=cover_mime,
         language="vi",
-        publisher="Hishiro"
+        publisher="Hishiro",
+        tags=info.get("Genre"),
     )
     print(f"✅ EPUB: {epub_path}")
     print(f"📁 Thư mục chương đã lưu: {out_dir}")

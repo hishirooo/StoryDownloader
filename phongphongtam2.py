@@ -12,8 +12,9 @@ from datetime import datetime
 from typing import Optional
 from urllib.parse import urljoin
 import requests, re, os, unicodedata, zipfile, io, time, shutil
-from ebooklib import epub
 import html
+from download_logger import chapter_log_line
+from epub_builder import create_epub
 # Pillow (cover)
 try:
     from PIL import Image
@@ -338,117 +339,73 @@ def create_epub_advanced(info: dict, chapters: list):
     """
     Tải chương, tạo log, và đóng gói EPUB chất lượng cao, Kobo-friendly.
     """
-    # ... (Giữ nguyên phần khởi tạo book, info, cover_url) ...
     book_title = info.get('title') or "Truyện không tên"
     book_author = info.get('author') or "Unknown"
     cover_url = info.get('cover')
-    
-    # 1. Khởi tạo EPUB
-    book = epub.EpubBook()
-    book.set_identifier(f"urn:uuid:{_slugify_vi(book_title)}-{int(time.time())}")
-    book.set_title(book_title)
-    book.set_language('vi')
-    book.add_author(book_author)
-    book.add_metadata('DC', 'publisher', book_author)
-    book.add_metadata('DC', 'contributor', 'Hishiro')
-    
-    # 2. Xử lý Cover
-    cover_item = None
+
+    # 1. Xử lý cover
+    cover_bytes = None
+    cover_ext = ".jpg"
     if cover_url:
-        cover_bytes, cover_ext = _fetch_and_process_cover(cover_url)
-        if cover_bytes:
-            mime = f"image/{cover_ext.strip('.')}"
-            cover_item = epub.EpubItem(
-                uid="cover-img", 
-                file_name=f"Images/cover{cover_ext}", 
-                media_type=mime, 
-                content=cover_bytes
-            )
-            book.add_item(cover_item)
-            
-            # Đã sửa lỗi TypeError: Bỏ media_type
-            book.set_cover("cover-img", cover_item.content)
-            
-            cover_page = epub.EpubHtml(title='Cover', file_name='Text/cover.xhtml', lang='vi')
-            cover_page.content = f'<div style="text-align: center;"><img src="../Images/cover{cover_ext}" alt="Cover"/></div>'
-            book.add_item(cover_page)
+        cover_bytes, detected_ext = _fetch_and_process_cover(cover_url)
+        if cover_bytes and detected_ext:
+            cover_ext = detected_ext
 
-
-    # 3. Tải và thêm các chương
-    epub_chapters = []
-    toc_links = []
-    
+    # 2. Tải nội dung chương
     total_chapters = len(chapters)
-    
-    # 3.1. Thêm Trang Bìa vào TOC (Mục lục) và Spine
-    if cover_item:
-        toc_links.append(epub.Link('Text/cover.xhtml', 'Bìa Truyện', 'cover_page_id')) 
-        
-    
+    selected_chapters = []
+    chapters_data = []
+
     for i, chap_info in enumerate(chapters, 1):
         chap_title = chap_info.get('title')
         chap_link = chap_info.get('link')
         clean_title = _clean_chapter_title(chap_title, i)
-        
-        # 3.2. Lấy nội dung đã làm sạch
+
         content_body_html = _get_content_chapter(chap_link)
-        
         if not content_body_html:
-            print(f"[{i:04d}/{total_chapters:04d}] Skipped - Nội dung rỗng.")
+            print(chapter_log_line(i, total_chapters, "ERR", i, total_chapters, f"{clean_title} - Nội dung rỗng"))
             continue
-            
-        # 3.3. Tạo EpubHtml item
-        chap_xhtml = epub.EpubHtml(
-            title=clean_title, 
-            file_name=f'Text/chap_{i:04d}.xhtml', 
-            lang='vi'
-        )
-        
-        chap_xhtml.content = f'<h2>{html.escape(clean_title)}</h2>{content_body_html}'
-        
-        book.add_item(chap_xhtml)
-        epub_chapters.append(chap_xhtml)
-        
-        # 3.4. Thêm vào TOC và Spine
-        toc_links.append(epub.Link(chap_xhtml.file_name, clean_title, f'chap_{i}'))
-        
-        # LOGGING
-        print(f"[{i:04d}/{total_chapters:04d}] Saved   - {clean_title} - {chap_link}")
-        
+
+        selected_chapters.append({"title": clean_title, "url": chap_link})
+        chapters_data.append({"title": clean_title, "content_html": content_body_html, "url": chap_link})
+        print(chapter_log_line(i, total_chapters, 200, i, total_chapters, clean_title))
         time.sleep(SLEEP_BETWEEN_CHAPS)
 
-    
-    # 4. Thiết lập Mục lục (TOC) và Spine
-    book.toc = toc_links
-    
-    # Sắp xếp Spine: Trang Bìa (nếu có) -> Các Chương
-    spine_items = []
-    
-    # SỬA LỖI: Thay thế get_item() bằng get_items() và lọc.
-    if cover_item:
-        # Lọc item cover_page ra khỏi tất cả các item
-        cover_page_item = next((item for item in book.get_items() if item.file_name == 'Text/cover.xhtml'), None)
-        if cover_page_item:
-            spine_items.append(cover_page_item) 
-    
-    spine_items.extend(epub_chapters)
-    book.spine = spine_items
-    
-    # Thêm NCX và NAV (bắt buộc cho EPUB3/TOC)
-    book.add_item(epub.EpubNcx())
-    book.add_item(epub.EpubNav())
-    
-    # 5. Đóng gói
+    if not chapters_data:
+        raise RuntimeError("Không tải được chương nào để tạo EPUB.")
+
+    # 3. Đóng gói thủ công giống metruyen-fit.py
     out_dir = "output"
     os.makedirs(out_dir, exist_ok=True)
     out_file = os.path.join(out_dir, f"{_slugify_vi(book_title)}.epub")
-    
+
+    book_info = {
+        "title": book_title,
+        "author": book_author,
+        "genre": info.get("genre"),
+        "status": info.get("status"),
+        "cover_url": cover_url or "",
+    }
+
     try:
-        epub.write_epub(out_file, book, {})
+        create_epub(
+            book_url="",
+            book_title=book_title,
+            author=book_author,
+            chapters=selected_chapters,
+            fetch_fn=None,
+            cover_bytes=cover_bytes,
+            cover_ext=cover_ext,
+            language="vi",
+            out_epub_path=out_file,
+            chapters_data=chapters_data,
+            tags=info.get("genre"),
+            book_info=book_info,
+        )
         print(f"\n✅ EPUB '{book_title}' đã tạo thành công tại: {out_file}")
     except Exception as e:
         print(f"\n❌ Lỗi khi đóng gói EPUB: {e}")
-        
+
     return out_file
 if __name__ == "__main__":
     UrlStory= "https://phongphongtam2.com/manga/tinh-yeu-den-muon-diep-kien-tinh/"

@@ -342,6 +342,8 @@ class CzbooksScraper:
             language='zh',
             out_epub_path=epub_path,
             html_cache_dir=self.book_dir,
+            tags=self.novel_data,
+            book_info=self.novel_data,
         )
 
         _print(f'\n✅ Đã tạo EPUB: {epub_path}')

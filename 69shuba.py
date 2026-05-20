@@ -27,6 +27,7 @@ import re
 import subprocess
 import sys
 import time
+from download_logger import chapter_log_line
 
 try:
     from curl_cffi import requests as http_requests
@@ -516,6 +517,74 @@ def _chapter_number(title: str) -> Optional[int]:
     return int(match.group(1)) if match else None
 
 
+def _chapter_url_key(chapter_url: str) -> str:
+    path = urlparse(chapter_url or "").path
+    path = re.sub(r"\.html?$", "", path, flags=re.I)
+    return path.rstrip("/")
+
+
+def _same_chapter_url(left: str, right: str) -> bool:
+    left_key = _chapter_url_key(left)
+    right_key = _chapter_url_key(right)
+    return bool(left_key and right_key and left_key == right_key)
+
+
+def _is_likely_catalog_noise(title: str) -> bool:
+    if _chapter_number(title) is not None:
+        return False
+    return re.search(
+        r"(请假|休息|感言|求月票|月票|新书|生日快乐|中秋快乐|新年快乐|高考|"
+        r"加油|声明|通知|公告|更新|提前发|已上传|开始上传|完本)",
+        title or "",
+    ) is not None
+
+
+def _filter_chapter_catalog(chapters: List[Dict[str, str]], info: Dict[str, str]) -> List[Dict[str, str]]:
+    filtered = list(chapters)
+    if not filtered:
+        return filtered
+
+    latest_title = info.get("latest_chapter", "") or ""
+    latest_url = info.get("latest_chapter_url", "") or ""
+
+    trimmed_to_latest = False
+    if latest_url and not _is_likely_catalog_noise(latest_title):
+        for idx, chapter in enumerate(filtered):
+            if _same_chapter_url(chapter.get("url", ""), latest_url):
+                filtered = filtered[:idx + 1]
+                trimmed_to_latest = True
+                break
+
+    if not trimmed_to_latest:
+        latest_number = _chapter_number(latest_title)
+        if latest_number is not None:
+            for idx in range(len(filtered) - 1, -1, -1):
+                if _chapter_number(filtered[idx].get("title", "")) == latest_number:
+                    filtered = filtered[:idx + 1]
+                    break
+
+    numbered_indexes = [
+        idx for idx, chapter in enumerate(filtered)
+        if _chapter_number(chapter.get("title", "")) is not None
+    ]
+    if len(numbered_indexes) < 10:
+        return filtered
+
+    last_numbered_idx = numbered_indexes[-1]
+    last_numbered_url_id = _chapter_url_id(filtered[last_numbered_idx].get("url", ""))
+    kept_tail: List[Dict[str, str]] = []
+    for chapter in filtered[last_numbered_idx + 1:]:
+        title = chapter.get("title", "")
+        url_id = _chapter_url_id(chapter.get("url", ""))
+        if _is_likely_catalog_noise(title):
+            continue
+        if url_id and last_numbered_url_id and url_id <= last_numbered_url_id:
+            continue
+        kept_tail.append(chapter)
+
+    return filtered[:last_numbered_idx + 1] + kept_tail
+
+
 def _get_list_chapters(soup: BeautifulSoup, page_url: str) -> List[Dict[str, str]]:
     chapters: List[Dict[str, str]] = []
     seen: set[str] = set()
@@ -586,6 +655,9 @@ def getText(url: str) -> Dict:
         catalog_soup = _fetch_html(catalog_url, referer=url)
         chapters = _get_list_chapters(catalog_soup, catalog_url)
 
+    raw_total_chapters = len(chapters)
+    chapters = _filter_chapter_catalog(chapters, info)
+
     return {
         "title": info["title"],
         "author": info["author"],
@@ -596,6 +668,7 @@ def getText(url: str) -> Dict:
         "latest_chapter_url": info.get("latest_chapter_url", ""),
         "chapters": chapters,
         "total_chapters": len(chapters),
+        "raw_total_chapters": raw_total_chapters,
         "cover_url": info["cover_url"],
         "intro": info["intro"],
         "url": url,
@@ -802,16 +875,6 @@ def _normalize_range(total: int, start: int = 1, end: Optional[int] = None) -> T
     return start, end
 
 
-def _status_label(status) -> str:
-    if status == "CACHE":
-        return "CACHE"
-    if status == 200:
-        return "\033[32mHTTP=200\033[0m"
-    if isinstance(status, int):
-        return f"\033[31mHTTP={status}\033[0m" if status >= 400 else f"HTTP={status}"
-    return f"HTTP={status}"
-
-
 def save_all_chapters_to_html(
     book_title: str,
     chapters: List[Dict[str, str]],
@@ -829,10 +892,7 @@ def save_all_chapters_to_html(
         chapter = chapters[idx - 1]
         data = _save_one_chapter_html(chapter, idx, out_dir, book_title=book_title, force=force)
         saved.append(data)
-        _safe_print(
-            f"[{done}/{selected_total}] [{_status_label(data.get('status_code', 'ERR'))}] "
-            f"Chương {idx:04d}/{len(chapters):04d}: {data.get('title') or chapter.get('title')}"
-        )
+        _safe_print(chapter_log_line(done, selected_total, data.get("status_code", "ERR"), idx, len(chapters), data.get("title") or chapter.get("title") or ""))
     _safe_print(f"Hoàn tất tải/cache {selected_total} chương.")
     return saved
 
@@ -998,6 +1058,8 @@ def build_epub(
             html_cache_dir=None,
             chapters_data=chapters_data,
             language="zh-CN",
+            tags=book_info.get("category", ""),
+            book_info=book_info,
         )
     _safe_print(f"[Epub] Đã tạo xong ebook: {epub_path}")
     return epub_path
@@ -1020,6 +1082,7 @@ def _prepare_book_context(url: str) -> Tuple[Dict[str, str], List[Dict[str, str]
         "url": data.get("url", url),
     }
     chapters = data.get("chapters", [])
+    raw_total_chapters = data.get("raw_total_chapters", len(chapters))
     book_dir = OUTPUT_BASE / _safe_filename(book_info["title"])
     book_dir.mkdir(parents=True, exist_ok=True)
     _save_book_info(book_info, chapters, book_dir)
@@ -1031,7 +1094,10 @@ def _prepare_book_context(url: str) -> Tuple[Dict[str, str], List[Dict[str, str]
         _safe_print(f"Trạng thái   : {book_info['status']}")
     if book_info.get("category"):
         _safe_print(f"Thể loại     : {book_info['category']}")
-    _safe_print(f"Số chương    : {len(chapters)}")
+    if raw_total_chapters > len(chapters):
+        _safe_print(f"Số chương    : {len(chapters)} (đã lọc {raw_total_chapters - len(chapters)} mục rác)")
+    else:
+        _safe_print(f"Số chương    : {len(chapters)}")
     if book_info.get("latest_chapter"):
         _safe_print(f"Mới nhất     : {book_info['latest_chapter']}")
     _safe_print(f"Thư mục truyện: {book_dir}")
@@ -1083,49 +1149,60 @@ def _ask_int(prompt: str, default: Optional[int] = None) -> int:
             _safe_print("Vui lòng nhập số hợp lệ.")
 
 
+def _print_download_menu() -> None:
+    _safe_print("\n-----------------Menu-----------------")
+    _safe_print("[1] Tải tất cả ( Html + Epub ) ( Mặc định )")
+    _safe_print("[2] Tải từ X tới Y ( html )")
+    _safe_print("[3] Tải chương X ( html )")
+    _safe_print("[4] Thoát")
+
+
+def _post_task_menu() -> bool:
+    _safe_print("\n-----------------Menu-----------------")
+    _safe_print("[1] Nhập Url truyện mới")
+    _safe_print("[2] Thoát ( Mặc định )")
+    choice = input("Chọn [2]: ").strip() or "2"
+    return choice == "1"
+
+
 def main() -> None:
     _safe_print("Downloader 69shuba.com / 69书吧")
-    raw_url = input(f"Nhập url [{DEFAULT_URL}]: ").strip()
-    book_info, chapters, book_dir, cover_bytes, cover_ext = _prepare_book_context(raw_url or DEFAULT_URL)
-
     while True:
-        _safe_print("\n-----------------Menu-----------------")
-        _safe_print("[1] Tải toàn bộ (HTML + EPUB) - Default")
-        _safe_print("[2] Tải toàn bộ (HTML/TXT)")
-        _safe_print("[3] Tải từ chương X đến chương Y (HTML + EPUB)")
-        _safe_print("[4] Tạo EPUB từ cache hiện có")
-        _safe_print("[5] Nhập URL truyện mới")
-        _safe_print("[0] Thoát")
-        choice = input("Chọn [1]: ").strip() or "1"
-
+        raw_url = input(f"Nhập Url [{DEFAULT_URL}]: ").strip() or DEFAULT_URL
         try:
-            if choice == "0":
-                break
-            if choice == "1":
-                save_all_chapters_to_html(book_info["title"], chapters, str(book_dir))
-                build_epub(book_info, chapters, book_dir, cover_bytes=cover_bytes, cover_ext=cover_ext)
-            elif choice == "2":
-                save_all_chapters_to_html(book_info["title"], chapters, str(book_dir))
-                save_combined_txt(book_info, chapters, book_dir)
-                save_txt_from_html(book_info, chapters, book_dir)
-            elif choice == "3":
-                start = _ask_int("Chương bắt đầu: ")
-                end = _ask_int("Chương kết thúc: ", len(chapters))
-                start, end = _normalize_range(len(chapters), start, end)
-                save_all_chapters_to_html(book_info["title"], chapters, str(book_dir), start=start, end=end)
-                build_epub(book_info, chapters, book_dir, start=start, end=end, cover_bytes=cover_bytes, cover_ext=cover_ext)
-            elif choice == "4":
-                build_epub(book_info, chapters, book_dir, cover_bytes=cover_bytes, cover_ext=cover_ext)
-            elif choice == "5":
-                raw_url = input("Nhập url mới: ").strip()
-                if not raw_url:
-                    _safe_print("URL trống, giữ nguyên truyện hiện tại.")
-                    continue
-                book_info, chapters, book_dir, cover_bytes, cover_ext = _prepare_book_context(raw_url)
-            else:
-                _safe_print("Lựa chọn không hợp lệ.")
+            book_info, chapters, book_dir, cover_bytes, cover_ext = _prepare_book_context(raw_url)
         except Exception as exc:
             _safe_print(f"Lỗi: {exc}")
+            continue
+
+        while True:
+            _print_download_menu()
+            choice = input("Chọn [1]: ").strip() or "1"
+
+            try:
+                if choice == "1":
+                    save_all_chapters_to_html(book_info["title"], chapters, str(book_dir))
+                    build_epub(book_info, chapters, book_dir, cover_bytes=cover_bytes, cover_ext=cover_ext)
+                    break
+                if choice == "2":
+                    start = _ask_int("Chương bắt đầu: ")
+                    end = _ask_int("Chương kết thúc: ", len(chapters))
+                    start, end = _normalize_range(len(chapters), start, end)
+                    save_all_chapters_to_html(book_info["title"], chapters, str(book_dir), start=start, end=end)
+                    break
+                if choice == "3":
+                    idx = _ask_int("Chương cần tải: ")
+                    idx, _ = _normalize_range(len(chapters), idx, idx)
+                    save_all_chapters_to_html(book_info["title"], chapters, str(book_dir), start=idx, end=idx)
+                    break
+                if choice == "4":
+                    return
+                _safe_print("Lựa chọn không hợp lệ.")
+            except Exception as exc:
+                _safe_print(f"Lỗi: {exc}")
+
+        if not _post_task_menu():
+            return
 
 
 if __name__ == "__main__":

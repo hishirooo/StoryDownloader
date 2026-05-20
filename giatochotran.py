@@ -16,6 +16,8 @@ import requests, ssl, urllib3, re, json, html, os, unicodedata, zipfile, io, dat
 from requests.adapters import HTTPAdapter
 from urllib3.util import Retry
 import importlib, re, sys, os, io, glob
+from download_logger import chapter_log_line
+from epub_metadata import PUBLISHER, subject_xml
 
 # Thử import Pillow cho xử lý ảnh bìa
 try:
@@ -435,7 +437,8 @@ def save_all_chapters_to_xhtml(book_title: str, chapters: list, out_dir: str,
     
     print(f"\n--- Bắt đầu tải {end - start + 1} chương ({start} đến {end}) ---")
     
-    for i in range(start, end + 1):
+    selected_total = end - start + 1
+    for done, i in enumerate(range(start, end + 1), 1):
         info = chapters[i-1]
         try:
             chap_title, chap_url = info.get('tieu_de', f'Chương {i}'), info.get('duong_dan')
@@ -448,18 +451,18 @@ def save_all_chapters_to_xhtml(book_title: str, chapters: list, out_dir: str,
             
             # Kiểm tra xem chương có bị khóa không
             if c.get("title", "").startswith("Protected - "):
-                 print(f"[{i:04d}/{n}] ⚠️ Chương bị khóa: {chap_title} - {chap_url}")
+                 print(chapter_log_line(done, selected_total, "ERR", i, n, f"{chap_title} bị khóa"))
             
             # Lưu file, c['display_title'] sẽ được tạo trong hàm này
             p = save_chapter_xhtml(book_title, i, c, chap_out_dir)
             
-            # LOG format yêu cầu: [xxxx/yyyy] Saved - Tên chương - Link chương
+            # Log format chung: [XXX/YYY] [HTTP=...] Chương XXXX/YYYY: Tên chương
             # Dùng display_title đã được làm sạch
-            print(f"[{i:04d}/{n}] Saved - {c['display_title']} - {chap_url}", flush=True)
+            print(chapter_log_line(done, selected_total, c.get("status_code", 200), i, n, c["display_title"]), flush=True)
             saved.append(p)
             time.sleep(SLEEP_BETWEEN_CHAPS)
         except Exception as e:
-            print(f"[{i:04d}/{n}] ERROR {chap_url}: {e}", flush=True)
+            print(chapter_log_line(done, selected_total, "ERR", i, n, f"{chap_title} ({e})"), flush=True)
     return saved
 
 
@@ -481,7 +484,8 @@ def create_epub(book_url: str | None,
                 epub_target: str | None = None,
                 cover_bytes: bytes | None = None,
                 cover_ext: str | None = None,
-                cover_mime: str | None = None) -> str:
+                cover_mime: str | None = None,
+                tags=None) -> str:
     """
     Tạo EPUB2 hoặc EPUB3 từ danh sách đường dẫn file XHTML đã lưu. 
     """
@@ -634,6 +638,7 @@ def create_epub(book_url: str | None,
         spine_items_str    = "\n    ".join(spine_items)
         navpoints_str      = "\n    ".join(navpoints)
         dt_utc = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        subjects = subject_xml(tags, indent="    ")
         
         if target == "epub3":
             nav_html = (
@@ -666,7 +671,8 @@ def create_epub(book_url: str | None,
                 f'    <dc:creator>{html.escape(author)}</dc:creator>\n'
                 f'    <dc:language>{language}</dc:language>\n'
                 f'    <meta name="creator" content="{html.escape(creator)}"/>\n'
-                f'    <dc:publisher>{html.escape(author)}</dc:publisher>\n'
+                f'    <dc:publisher>{html.escape(PUBLISHER)}</dc:publisher>\n'
+                f'{subjects}'
                 f'    <meta property="dcterms:modified">{dt_utc}</meta>\n'
                 '  </metadata>\n'
                 '  <manifest>\n'
@@ -697,7 +703,8 @@ def create_epub(book_url: str | None,
                 f'    <dc:identifier id="BookID">urn:uuid:{_slugify_vi(book_title)}-{int(time.time())}</dc:identifier>\n'
                 f'    <dc:title>{html.escape(book_title)}</dc:title>\n'
                 f'    <dc:creator>{html.escape(author)}</dc:creator>\n'
-                f'    <dc:publisher>{html.escape(author)}</dc:publisher>\n'
+                f'    <dc:publisher>{html.escape(PUBLISHER)}</dc:publisher>\n'
+                f'{subjects}'
                 f'    <dc:language>{language}</dc:language>\n'
                 '    <meta name="cover" content="cover-image"/>\n'
                 f'    <meta name="creator" content="{html.escape(creator)}"/>\n'
@@ -745,7 +752,7 @@ def create_epub(book_url: str | None,
 
 def build_epub_from_files(title: str, author: str, out_epub_path: str, chap_dir: str,
                cover_bytes: bytes | None = None, cover_ext: str | None = None, cover_mime: str | None = None,
-               epub_target: str | None = None) -> str:
+               epub_target: str | None = None, tags=None) -> str:
     """
     Quét các file .xhtml trong thư mục Text của chap_dir, sắp xếp, rồi gọi create_epub.
     """
@@ -774,7 +781,8 @@ def build_epub_from_files(title: str, author: str, out_epub_path: str, chap_dir:
         epub_target=epub_target or EPUB_TARGET,
         cover_bytes=cover_bytes,
         cover_ext=cover_ext,
-        cover_mime=cover_mime
+        cover_mime=cover_mime,
+        tags=tags,
     )
 
 def download_and_build_epub(url_story: str, pass_unlock_chapter: Optional[str] = None):
@@ -843,7 +851,8 @@ def download_and_build_epub(url_story: str, pass_unlock_chapter: Optional[str] =
             chap_dir=story_out_dir,
             cover_bytes=cover_bytes,
             cover_ext=cover_ext,
-            cover_mime=cover_mime
+            cover_mime=cover_mime,
+            tags=info.get("Genre"),
         )
     except ValueError as e:
         print(f"❌ Lỗi tạo EPUB: {e}")

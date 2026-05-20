@@ -20,6 +20,7 @@ except ImportError:
         USE_CURL_CFFI = True
 import importlib, sys, glob
 from uuid import uuid4
+from epub_metadata import PUBLISHER
 # Thử import Pillow cho xử lý ảnh bìa
 try:
     from PIL import Image
@@ -336,6 +337,7 @@ def __save_epub(title: str, author: str, chapters: List[Dict[str, str]], cover_c
     <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
         <dc:title>{title}</dc:title>
         <dc:creator>{author}</dc:creator>
+        <dc:publisher>{PUBLISHER}</dc:publisher>
         <dc:identifier id="uuid_id">urn:uuid:{uuid4()}</dc:identifier>
     </metadata>
     <manifest>

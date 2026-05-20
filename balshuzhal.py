@@ -23,6 +23,8 @@ import re
 import sys
 import time
 import zipfile
+from download_logger import chapter_log_line
+from epub_metadata import PUBLISHER, subject_xml
 
 try:
     from curl_cffi import requests as http_requests
@@ -616,16 +618,6 @@ def _normalize_range(total: int, start: int = 1, end: Optional[int] = None) -> T
     return start, end
 
 
-def _status_label(status) -> str:
-    if status == "CACHE":
-        return "CACHE"
-    if status == 200:
-        return "\033[32mHTTP=200\033[0m"
-    if isinstance(status, int) and status >= 400:
-        return f"\033[31mHTTP={status}\033[0m"
-    return f"HTTP={status}"
-
-
 def download_chapters(
     book_info: Dict[str, str],
     chapters: List[Dict[str, str]],
@@ -650,7 +642,7 @@ def download_chapters(
         )
         downloaded.append(data)
         status_code = data.get("status_code", "ERR")
-        _safe_print(f"[{done}/{total_selected}] [{_status_label(status_code)}] Chương {idx:04d}/{len(chapters):04d}: {chapter['title']}")
+        _safe_print(chapter_log_line(done, total_selected, status_code, idx, len(chapters), chapter.get("title", "")))
     _safe_print(f"Hoàn tất tải/cache {total_selected} chương.")
     return downloaded
 
@@ -685,10 +677,7 @@ def save_all_chapters_to_html(
                     encoding="utf-8",
                 )
         saved.append(data)
-        _safe_print(
-            f"[{done}/{total_selected}] [{_status_label(data.get('status_code', 'ERR'))}] "
-            f"Chương {idx:04d}/{len(chapters):04d}: {data.get('title') or chapter.get('title')}"
-        )
+        _safe_print(chapter_log_line(done, total_selected, data.get("status_code", "ERR"), idx, len(chapters), data.get("title") or chapter.get("title") or ""))
 
     return saved
 
@@ -902,13 +891,15 @@ nav ol { padding-left: 1.4em; }
 </ncx>
 """
 
+    subjects = subject_xml(book_info.get("category", ""))
     content_opf = f"""<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="BookId">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="BookId">{html.escape(uid)}</dc:identifier>
     <dc:title>{html.escape(title)}</dc:title>
     <dc:creator>{html.escape(author)}</dc:creator>
-    <dc:language>zh-CN</dc:language>
+    <dc:publisher>{html.escape(PUBLISHER)}</dc:publisher>
+{subjects}    <dc:language>zh-CN</dc:language>
     <dc:source>{html.escape(book_info.get("url", ""))}</dc:source>
     <meta property="dcterms:modified">{modified}</meta>
     {'<meta name="cover" content="cover-image"/>' if has_cover else ''}
@@ -1041,56 +1032,60 @@ def _load_book_context(url: str) -> Tuple[Dict[str, str], List[Dict[str, str]], 
     return book_info, chapters, book_dir, cover_bytes, cover_ext
 
 
+def _print_download_menu() -> None:
+    _safe_print("\n-----------------Menu-----------------")
+    _safe_print("[1] Tải tất cả ( Html + Epub ) ( Mặc định )")
+    _safe_print("[2] Tải từ X tới Y ( html )")
+    _safe_print("[3] Tải chương X ( html )")
+    _safe_print("[4] Thoát")
+
+
+def _post_task_menu() -> bool:
+    _safe_print("\n-----------------Menu-----------------")
+    _safe_print("[1] Nhập Url truyện mới")
+    _safe_print("[2] Thoát ( Mặc định )")
+    choice = input("Chọn [2]: ").strip() or "2"
+    return choice == "1"
+
+
 def main() -> None:
     _safe_print("Downloader balshuzhal.cc / 百书斋")
-    raw_url = input(f"Nhập url [{DEFAULT_URL}]: ").strip()
-    book_info, chapters, book_dir, cover_bytes, cover_ext = _load_book_context(raw_url or DEFAULT_URL)
-
     while True:
-        _safe_print("\n-----------------Menu-----------------")
-        _safe_print("[1] Tải toàn bộ (HTML + EPUB) - Default")
-        _safe_print("[2] Tải toàn bộ (HTML/TXT)")
-        _safe_print("[3] Tải từ chương X đến chương Y (HTML + EPUB)")
-        _safe_print("[4] Tạo EPUB từ cache hiện có")
-        _safe_print("[5] Nhập URL truyện mới")
-        _safe_print("[0] Thoát")
-        choice = input("Chọn [1]: ").strip() or "1"
-
+        raw_url = input(f"Nhập Url [{DEFAULT_URL}]: ").strip() or DEFAULT_URL
         try:
-            if choice == "0":
-                break
-            if choice == "1":
-                download_chapters(book_info, chapters, book_dir)
-                build_epub_manual(book_info, chapters, book_dir, cover_bytes=cover_bytes, cover_ext=cover_ext)
-            elif choice == "2":
-                download_chapters(book_info, chapters, book_dir)
-                save_combined_txt(book_info, chapters, book_dir)
-            elif choice == "3":
-                start = _ask_int("Chương bắt đầu: ")
-                end = _ask_int("Chương kết thúc: ", len(chapters))
-                normalized_start, normalized_end = _normalize_range(len(chapters), start, end)
-                download_chapters(book_info, chapters, book_dir, start=normalized_start, end=normalized_end)
-                build_epub_manual(
-                    book_info,
-                    chapters,
-                    book_dir,
-                    start=normalized_start,
-                    end=normalized_end,
-                    cover_bytes=cover_bytes,
-                    cover_ext=cover_ext,
-                )
-            elif choice == "4":
-                build_epub_manual(book_info, chapters, book_dir, cover_bytes=cover_bytes, cover_ext=cover_ext)
-            elif choice == "5":
-                raw_url = input("Nhập url mới: ").strip()
-                if not raw_url:
-                    _safe_print("URL trống, giữ nguyên truyện hiện tại.")
-                    continue
-                book_info, chapters, book_dir, cover_bytes, cover_ext = _load_book_context(raw_url)
-            else:
-                _safe_print("Lựa chọn không hợp lệ.")
+            book_info, chapters, book_dir, cover_bytes, cover_ext = _load_book_context(raw_url)
         except Exception as exc:
             _safe_print(f"Lỗi: {exc}")
+            continue
+
+        while True:
+            _print_download_menu()
+            choice = input("Chọn [1]: ").strip() or "1"
+
+            try:
+                if choice == "1":
+                    download_chapters(book_info, chapters, book_dir)
+                    build_epub_manual(book_info, chapters, book_dir, cover_bytes=cover_bytes, cover_ext=cover_ext)
+                    break
+                if choice == "2":
+                    start = _ask_int("Chương bắt đầu: ")
+                    end = _ask_int("Chương kết thúc: ", len(chapters))
+                    start, end = _normalize_range(len(chapters), start, end)
+                    download_chapters(book_info, chapters, book_dir, start=start, end=end)
+                    break
+                if choice == "3":
+                    idx = _ask_int("Chương cần tải: ")
+                    idx, _ = _normalize_range(len(chapters), idx, idx)
+                    download_chapters(book_info, chapters, book_dir, start=idx, end=idx)
+                    break
+                if choice == "4":
+                    return
+                _safe_print("Lựa chọn không hợp lệ.")
+            except Exception as exc:
+                _safe_print(f"Lỗi: {exc}")
+
+        if not _post_task_menu():
+            return
 
 
 if __name__ == "__main__":
