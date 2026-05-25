@@ -1,0 +1,247 @@
+var Story = function(){
+    var load_comment = function(id, alias, fbcolor) {
+		return;
+        fbcolor = 'light';
+        $('#' + id).prepend('<div class="fb-comments" data-href="https://truyencom.com/' + alias + '/" data-width="100%" width="100%" data-numposts="5" data-colorscheme="' + fbcolor + '"></div>');
+        if (typeof FB !== 'undefined') {
+            FB.XFBML.parse();
+        } else {
+            var interval_FB = setInterval(function () {
+                if (typeof FB !== 'undefined') {
+                    FB.XFBML.parse();
+                    clearInterval(interval_FB);
+                }
+            }, 100);
+        }
+    };
+    var storyLink = function(item){
+        return location.origin+'/'+item.alias+(parseInt(item.dmca)>0?'-f'+item.dmca:'')+'.'+item.storyID+'/';
+    };
+    var genreLinks = function(gs,format,glue){
+        gs = gs.split(',');
+        var rt = [];
+        for(var i=0;i<gs.length;i++) rt.push(format.replace('{url}',location.origin+'/'+genres[gs[i]].slug+'/').replace(/\{name\}/g,genres[gs[i]].name));
+        return rt.join(glue);
+    };
+    var fb_loaded = 0;
+    var rating = function(){
+        function number_format(number, decimals, dec_point, thousands_sep) {
+            number = (number + '')
+                .replace(/[^0-9+\-Ee.]/g, '');
+            var n = !isFinite(+number) ? 0 : +number,
+                prec = !isFinite(+decimals) ? 0 : Math.abs(decimals),
+                sep = (typeof thousands_sep === 'undefined') ? ',' : thousands_sep,
+                dec = (typeof dec_point === 'undefined') ? '.' : dec_point,
+                s = '',
+                toFixedFix = function(n, prec) {
+                    var k = Math.pow(10, prec);
+                    return '' + (Math.round(n * k) / k)
+                        .toFixed(prec);
+                };
+            // Fix for IE parseFloat(0.55).toFixed(0) = 0;
+            s = (prec ? toFixedFix(n, prec) : '' + Math.round(n))
+                .split('.');
+            if (s[0].length > 3) {
+                s[0] = s[0].replace(/\B(?=(?:\d{3})+(?!\d))/g, sep);
+            }
+            if ((s[1] || '')
+                .length < prec) {
+                s[1] = s[1] || '';
+                s[1] += new Array(prec - s[1].length + 1)
+                    .join('0');
+            }
+            return s.join(dec);
+        }
+        var hints = ['Không còn gì để nói...', 'WTF', 'Cái gì thế này ?!', 'Haizz', 'Tạm', 'Cũng được', 'Khá đấy', 'Được', 'Hay', 'Tuyệt đỉnh!'];
+        var img,holder = $('.rate-holder')[0],score =parseFloat($('.rate-holder').data('score')),readOnly = localStorage.getItem('rate_'+storyID)?true:false;
+        var imgHover = function(){
+            $('.rate-text').text($(this).attr('title'));
+            var idx = $(this).attr('alt');
+            for(var j=1;j<11;j++){
+                if(j<=idx)
+                    $('.rate-holder img[alt="'+j+'"]').attr('src','//cdn.truyencom.com/assets/truyenfull/img/star-on.png');
+                else $('.rate-holder img[alt="'+j+'"]').attr('src','//cdn.truyencom.com/assets/truyenfull/img/star-off.png');
+            }
+        };
+        var imgClick = function(){
+            $(holder).addClass('loading');
+            API.post('api/rate',null,{storyID:storyID,rate:$(this).attr('alt')},true,function(data){
+                score = parseFloat(data.score);
+                for(var j=1;j<11;j++){
+                    if(score-j+1>=1) $('.rate-holder img[alt="'+j+'"]').attr('src','//cdn.truyencom.com/assets/truyenfull/img/star-on.png');
+                    else if(score-j+1>0) $('.rate-holder img[alt="'+j+'"]').attr('src','//cdn.truyencom.com/assets/truyenfull/img/star-half.png');
+                    else $('.rate-holder img[alt="'+j+'"]').attr('src','//cdn.truyencom.com/assets/truyenfull/img/star-off.png');
+                }
+                $('.rate>.small>em').html('Đánh giá: <strong><span itemprop="ratingValue">'+number_format(score,1)+'</span></strong>/<span class="text-muted" itemprop="bestRating">10</span> từ' +
+                    ' <strong><span itemprop="ratingCount">'+data.total+'</span> lượt</strong>');
+                localStorage.setItem('rate_'+storyID,1);
+                holder.removeEventListener('mouseout',blurRate);
+                var imgs = holder.getElementsByTagName('img');
+                for(j=0;j<imgs.length;j++){
+                    imgs[j].removeEventListener('mouseover',imgHover);
+                    imgs[j].removeEventListener('click',imgClick);
+                }
+                $(holder).removeClass('loading');
+                alert('Cảm ơn bạn đã gửi đánh giá');
+            });
+        };
+        var blurRate = function(){
+            for(var j=1;j<11;j++){
+                if(score-j+1>=1) $('.rate-holder img[alt="'+j+'"]').attr('src','//cdn.truyencom.com/assets/truyenfull/img/star-on.png');
+                else if(score-j+1>0) $('.rate-holder img[alt="'+j+'"]').attr('src','//cdn.truyencom.com/assets/truyenfull/img/star-half.png');
+                else $('.rate-holder img[alt="'+j+'"]').attr('src','//cdn.truyencom.com/assets/truyenfull/img/star-off.png');
+            }
+            $('.rate-text').text('');
+        };
+        for(var i=0;i<10;i++){
+            img = new Image(16,16);
+            if(score-i>=1) img.src = '//cdn.truyencom.com/assets/truyenfull/img/star-on.png';
+            else if(score-i>0) img.src = '//cdn.truyencom.com/assets/truyenfull/img/star-half.png';
+            else img.src = '//cdn.truyencom.com/assets/truyenfull/img/star-off.png';
+            img.setAttribute('title',hints[i]);
+            img.setAttribute('alt',i+1);
+            holder.appendChild(img);
+            if(!readOnly){
+                img.addEventListener('mouseover',imgHover);
+                img.addEventListener('click',imgClick);
+            }
+        }
+        if(!readOnly){
+            holder.addEventListener('mouseout',blurRate);
+            $('.rate-holder').css('cursor','pointer');
+        }
+    };
+    var getChapters = function(page){
+        API.get('api/chapters/'+storyID+'/'+page+'/50',null,null,function(data){
+            var storyTitle = $('h1').text();
+            $('.pagination').html(data.pagination.replace(/\{title\}/g,storyTitle));
+            $('#list-chapter .list-chapter').html('');
+            var lists = $('#list-chapter .list-chapter');
+            var f = Math.ceil(data.items.length/2),k;
+            for(var i=0;i<data.items.length;i++){
+                k = Math.floor(i/f);
+                $(lists[k]).append('<li><span class="glyphicon glyphicon-certificate"></span> <a href="'+location.origin+'/'+storyAlias+'/'+str2url(data.items[i].chapter_name.split(':')[0])+'.html" title="'+storyTitle+' - '+data.items[i].chapter_name+'"><span class="chapter-text"><span>'+data.items[i].chapter_name.replace(/Chương ([0-9\-\.]+):/i,'Chương </span></span>$1:')+' </a></li>');
+            }
+            document.getElementById('list-chapter').scrollIntoView(true);
+            jumpPage();
+        });
+    };
+    var jumpPage = function(){
+        $('#page_jump').on('submit',function(e){
+            e.preventDefault();
+            getChapters(this['page'].value);
+            $('.dropup.page-nav').removeClass('open');
+        });
+    };
+    return {
+        init: function(){
+            if ($('.desc-text').prop('scrollHeight') > $('.desc-text').height()) {
+                $('.showmore .btn').removeClass('hide');
+            }
+            rating();
+            $(document).on('click', '.showmore .btn', function (e) {
+                e.preventDefault();
+                $('.desc-text').css('height', 'auto');
+                $('.showmore').css('height', 0);
+                $(e.target).addClass('hide');
+            }).on('click','.pagination a',function(e){
+                e.preventDefault();
+                var cur = e.target;
+                if(cur.nodeName!='a') cur = $(cur).parents('a')[0];
+                if($(cur).data('toggle') == 'dropdown'){
+                    var $parent = $(cur.parentNode);
+                    if($parent.hasClass('open')) $parent.removeClass('open');
+                    else $parent.addClass('open');
+                    return;
+                }
+                var href = $(cur).attr('href');
+                if (href != 'javascript:void(0)') {
+                    e.preventDefault();
+                    $(cur).css({"cursor": "default", "pointer-events": "none", "opacity": "0.6"});
+                    var page = href.match(/\/trang-([0-9]+)\/\#chapter-list/);
+                    if (!page) {
+                        page = 1;
+                    } else {
+                        page = page[1];
+                    }
+                    getChapters(page);
+                }
+            });
+            jumpPage();
+            $(document).on('click','.top-nav>div',function(e){
+                var cur = $(e.target);
+                var data_type = cur.attr('data-type');
+                var data_limit = $(e.target.parentNode).attr('data-limit');
+                var data_cat = $(e.target.parentNode).attr('data-cat');
+                if (cur.hasClass("active")) {
+                    return false;
+                } else {
+                    cur.css({"cursor": "default", "pointer-events": "none", "opacity": "0.6"});
+                    API.get('/api/list/'+data_cat+'/top_view_'+data_type+'/1/'+data_limit,null,null,function(data){
+                        $('.top-nav div').removeClass("active");
+                        cur.addClass("active");
+                        cur.css({"cursor": "pointer", "pointer-events": "auto", "opacity": "1"});
+                        var html = '';
+                        for(var i=0;i<data.items.length;i++){
+                            html += '<div class="row top-item"><div class="col-xs-12">' +
+                                '<div class="top-num top-'+(i+1)+'">'+(i+1)+'</div>' +
+                                '<div class="s-title"><h3><a href="'+storyLink(data.items[i])+'" title="'+escapeHtml(data.items[i].title)+'">'+data.items[i].title+'</a></h3></div>' +
+                                '<div>'+genreLinks(data.items[i].cats,'<a itemprop="genre" href="{url}" title="{name}">{name}</a>',', ')+'</div></div></div>';
+                        }
+                        $('#top-hot-list>.top-item').remove();
+                        $('#top-hot-list').append(html);
+                    });
+                }
+            });
+            window.addEventListener('scroll',function () {
+                if (fb_loaded === 0) {
+                    (function (d, s, id) {
+                        var js, fjs = d.getElementsByTagName(s)[0];
+                        if (d.getElementById(id)) return;
+                        js = d.createElement(s);
+                        js.id = id;
+                        js.src = 'https://connect.facebook.net/vi_VN/sdk.js';
+                        fjs.parentNode.insertBefore(js, fjs);
+                        js.onload = function(){
+                            FB.init({
+                                appId: '171982233295330',
+                                version: 'v2.7' // or v2.1, v2.2, v2.3, ...
+                            });
+                        };
+                    }(document, 'script', 'facebook-jssdk'));
+                    fb_loaded = 1;
+                }
+            });
+            var fbCommentStory = document.getElementById('fb-comment-story');
+            if ("IntersectionObserver" in window) {
+                var lazyCmtObserver = new IntersectionObserver(function(entries, observer) {
+                    entries.forEach(function(entry) {
+                        if (entry.isIntersecting) {
+                            load_comment('fb-comment-story',storyAlias);
+                            lazyCmtObserver.unobserve(entry.target);
+                        }
+                    });
+                });
+                lazyCmtObserver.observe(fbCommentStory);
+            } else {
+                var active = false;
+                var lazyCmt_fnc = function() {
+                    if (active === false) {
+                        active = true;
+                        setTimeout(function() {
+                            if ((fbCommentStory.getBoundingClientRect().top <= window.innerHeight && fbCommentStory.getBoundingClientRect().bottom >= 0)){
+                                load_comment('fb-comment-story',storyAlias);
+                                document.removeEventListener("scroll", lazyCmt_fnc,{passive: true});
+                            }
+                            active = false;
+                        }, 200);
+                    }
+                };
+                document.addEventListener("scroll", lazyCmt_fnc,{passive: true});
+            }
+        }
+    }
+}();
+window.addEventListener('DOMContentLoaded',function(){
+    Story.init();
+})

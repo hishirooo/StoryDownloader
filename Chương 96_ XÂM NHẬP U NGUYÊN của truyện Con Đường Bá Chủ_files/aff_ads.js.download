@@ -1,0 +1,467 @@
+var affAds = function(){
+    var setCookie = function(cname,cvalue,exdays){
+        var d = new Date();
+        d.setTime(d.getTime() + (exdays*24*60*60*1000));
+        var expires = "expires="+ d.toUTCString();
+        document.cookie = cname + "=" + cvalue + ";" + expires + ";path=/";
+    };
+    var getCookie = function(cname){
+        var name = cname + "=";
+        var decodedCookie = document.cookie;
+        var ca = decodedCookie.split(';');
+        for(var i = 0; i <ca.length; i++) {
+            var c = ca[i];
+            while (c.charAt(0) == ' ') {
+                c = c.substring(1);
+            }
+            if (c.indexOf(name) == 0) {
+                return c.substring(name.length, c.length);
+            }
+        }
+        return "";
+    };
+    var isMobileGPU = function(){
+        function webgl(){
+            // WebGL
+            var webgl_1 = [
+                'VERSION',
+                'SHADING_LANGUAGE_VERSION',
+                'VENDOR', 'RENDERER',
+                'MAX_VERTEX_ATTRIBS',
+                'MAX_VERTEX_UNIFORM_VECTORS',
+                'MAX_VERTEX_TEXTURE_IMAGE_UNITS',
+                'MAX_VARYING_VECTORS',
+                'ALIASED_LINE_WIDTH_RANGE',
+                'ALIASED_POINT_SIZE_RANGE',
+                'MAX_FRAGMENT_UNIFORM_VECTORS',
+                'MAX_TEXTURE_IMAGE_UNITS',
+                [
+                    'RED_BITS',
+                    'GREEN_BITS',
+                    'BLUE_BITS',
+                    'ALPHA_BITS'
+                ],
+                [
+                    'DEPTH_BITS',
+                    'STENCIL_BITS'
+                ],
+                'MAX_RENDERBUFFER_SIZE',
+                'MAX_VIEWPORT_DIMS',
+                'MAX_TEXTURE_SIZE',
+                'MAX_CUBE_MAP_TEXTURE_SIZE',
+                'MAX_COMBINED_TEXTURE_IMAGE_UNITS'
+            ];
+
+            var webgl_2 = [
+                'MAX_VERTEX_UNIFORM_COMPONENTS',
+                'MAX_VERTEX_UNIFORM_BLOCKS',
+                'MAX_VERTEX_OUTPUT_COMPONENTS',
+                'MAX_VARYING_COMPONENTS',
+                'MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS',
+                'MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS',
+                'MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS',
+                'MAX_FRAGMENT_UNIFORM_COMPONENTS',
+                'MAX_FRAGMENT_UNIFORM_BLOCKS',
+                'MAX_FRAGMENT_INPUT_COMPONENTS',
+                'MIN_PROGRAM_TEXEL_OFFSET',
+                'MAX_PROGRAM_TEXEL_OFFSET',
+                'MAX_DRAW_BUFFERS',
+                'MAX_COLOR_ATTACHMENTS',
+                'MAX_SAMPLES',
+                'MAX_3D_TEXTURE_SIZE',
+                'MAX_ARRAY_TEXTURE_LAYERS',
+                'MAX_TEXTURE_LOD_BIAS',
+                'MAX_UNIFORM_BUFFER_BINDINGS',
+                'MAX_UNIFORM_BLOCK_SIZE',
+                'UNIFORM_BUFFER_OFFSET_ALIGNMENT',
+                'MAX_COMBINED_UNIFORM_BLOCKS',
+                'MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS',
+                'MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS'
+            ];
+
+            var webgl_other = [
+                'ACTIVE_TEXTURE',
+                'ARRAY_BUFFER_BINDING',
+                'BLEND',
+                'BLEND_COLOR',
+                'BLEND_DST_ALPHA',
+                'BLEND_DST_RGB',
+                'BLEND_EQUATION_ALPHA',
+                'BLEND_EQUATION_RGB',
+                'BLEND_SRC_ALPHA',
+                'BLEND_SRC_RGB',
+                'COLOR_CLEAR_VALUE',
+                'COLOR_WRITEMASK',
+                'COMPRESSED_TEXTURE_FORMATS',
+                'CULL_FACE',
+                'CULL_FACE_MODE',
+                'CURRENT_PROGRAM',
+                'DEPTH_CLEAR_VALUE',
+                'DEPTH_FUNC',
+                'DEPTH_RANGE',
+                'DEPTH_TEST',
+                'DEPTH_WRITEMASK',
+                'DITHER',
+                'ELEMENT_ARRAY_BUFFER_BINDING',
+                'FRAMEBUFFER_BINDING',
+                'FRONT_FACE',
+                'GENERATE_MIPMAP_HINT',
+                'LINE_WIDTH',
+                'MAX_TEXTURE_MAX_ANISOTROPY_EXT',
+                'PACK_ALIGNMENT',
+                'POLYGON_OFFSET_FACTOR',
+                'POLYGON_OFFSET_FILL',
+                'POLYGON_OFFSET_UNITS',
+                'RENDERBUFFER_BINDING',
+                'SAMPLE_BUFFERS',
+                'SAMPLE_COVERAGE_INVERT',
+                'SAMPLE_COVERAGE_VALUE',
+                'SAMPLES',
+                'SCISSOR_BOX',
+                'SCISSOR_TEST',
+                'STENCIL_BACK_FAIL',
+                'STENCIL_BACK_FUNC',
+                'STENCIL_BACK_PASS_DEPTH_FAIL',
+                'STENCIL_BACK_PASS_DEPTH_PASS',
+                'STENCIL_BACK_REF',
+                'STENCIL_BACK_VALUE_MASK',
+                'STENCIL_BACK_WRITEMASK',
+                'STENCIL_CLEAR_VALUE',
+                'STENCIL_FAIL',
+                'STENCIL_FUNC',
+                'STENCIL_PASS_DEPTH_FAIL',
+                'STENCIL_PASS_DEPTH_PASS',
+                'STENCIL_REF',
+                'STENCIL_TEST',
+                'STENCIL_VALUE_MASK',
+                'STENCIL_WRITEMASK',
+                'SUBPIXEL_BITS',
+                'TEXTURE_BINDING_2D',
+                'TEXTURE_BINDING_CUBE_MAP',
+                'UNPACK_ALIGNMENT',
+                'UNPACK_COLORSPACE_CONVERSION_WEBGL',
+                'UNPACK_FLIP_Y_WEBGL',
+                'UNPACK_PREMULTIPLY_ALPHA_WEBGL',
+                'VIEWPORT',
+                // 'INVALID_ENUM', TARAS ti dibil
+            ];
+
+            var webgl_names_assoc = {
+                'VERSION' : 'GL Version',
+                'SHADING_LANGUAGE_VERSION' : 'Shading Language Version',
+                'VENDOR' : 'Vendor',
+                'RENDERER' : 'Renderer',
+                'MAX_VERTEX_ATTRIBS' : 'Max Vertex Attributes',
+                'MAX_VERTEX_UNIFORM_VECTORS' : 'Max Vertex Uniform Vectors',
+                'MAX_VERTEX_TEXTURE_IMAGE_UNITS' : 'Max Vertex Texture Image Units',
+                'MAX_VARYING_VECTORS' : 'Max Varying Vectors',
+                'ALIASED_LINE_WIDTH_RANGE' : 'Aliased Line Width Range',
+                'ALIASED_POINT_SIZE_RANGE' : 'Aliased Point Size Range',
+                'MAX_FRAGMENT_UNIFORM_VECTORS' : 'Max Fragment Uniform Vectors',
+                'MAX_TEXTURE_IMAGE_UNITS' : 'Max Texture Image Units',
+
+                'RED_BITS' : 'RGBA Bits',
+                // 'GREEN_BITS' : 'AAAAAAAAA',
+                // 'BLUE_BITS' : 'AAAAAAAAA',
+                // 'ALPHA_BITS : 'AAAAAAAAA'',
+
+                'DEPTH_BITS' : 'Depth Bits',
+                'STENCIL_BITS' : 'Stencil Bits',
+
+                'MAX_RENDERBUFFER_SIZE' : 'Max Render Buffer Size',
+                'MAX_VIEWPORT_DIMS' : 'Max Viewport Dimensions',
+                'MAX_TEXTURE_SIZE' : 'Max Texture Size',
+                'MAX_CUBE_MAP_TEXTURE_SIZE' : 'Max Cube Map Texture Size',
+                'MAX_COMBINED_TEXTURE_IMAGE_UNITS' : 'Max Combined Texture Image Units',
+
+                'MAX_VERTEX_UNIFORM_COMPONENTS' : 'Max Vertex Uniform Components',
+                'MAX_VERTEX_UNIFORM_BLOCKS' : 'Max Vertex Uniform Blocks',
+                'MAX_VERTEX_OUTPUT_COMPONENTS' : 'Max Vertex Output Components',
+                'MAX_VARYING_COMPONENTS' : 'Max Varying Components',
+
+                'MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS' : 'Max Interleaved Components',
+                'MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS' : 'Max Separate Attribs',
+                'MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS' : 'Max Separate Components',
+
+                'MAX_FRAGMENT_UNIFORM_COMPONENTS' : 'Max Fragment Uniform Components',
+                'MAX_FRAGMENT_UNIFORM_BLOCKS' : 'Max Fragment Uniform Blocks',
+                'MAX_FRAGMENT_INPUT_COMPONENTS' : 'Max Fragment Input Components',
+                'MIN_PROGRAM_TEXEL_OFFSET' : 'Min Program Texel Offset',
+                'MAX_PROGRAM_TEXEL_OFFSET' : 'Max Program Texel Offset',
+                'MAX_DRAW_BUFFERS' : 'Max Draw Buffers',
+                'MAX_COLOR_ATTACHMENTS' : 'Max Color Attachments',
+                'MAX_SAMPLES' : 'Max Samples',
+                'MAX_3D_TEXTURE_SIZE' : 'Max 3D Texture Size',
+                'MAX_ARRAY_TEXTURE_LAYERS' : 'Max Array Texture Layers',
+                'MAX_TEXTURE_LOD_BIAS' : 'Max Texture LOD Bias',
+                'MAX_UNIFORM_BUFFER_BINDINGS' : 'Max Uniform Buffer Bindings',
+                'MAX_UNIFORM_BLOCK_SIZE' : 'Max Uniform Block Size',
+                'UNIFORM_BUFFER_OFFSET_ALIGNMENT' : 'Uniform Buffer Offset Alignment',
+                'MAX_COMBINED_UNIFORM_BLOCKS' : 'Max Combined Uniform Blocks',
+                'MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS' : 'Max Combined Vertex Uniform Components',
+                'MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS' : 'Max Combined Fragment Uniform Components'
+
+            };
+
+            var exclude_list = [];
+
+            var webgl_dict = {
+                // 'Supported Context Name' : 'webgl2, webgl, experimental-webgl',
+                'Unmasked Vendor' : null,
+                'Unmasked Renderer' : null,
+                'Max Anisotropy' : null,
+                'Supported WebGL Extensions' : null
+            };
+
+            var d = document.createElement('canvas');
+            var c = d.getContext('webgl2') || d.getContext('experimental-webgl2') || d.getContext('webgl') || d.getContext('experimental-webgl') || d.getContext('moz-webgl');
+
+            var gl = window.WebGL2RenderingContext || window.WebGLRenderingContext;
+
+            if(c && gl){
+
+                var debugInfo = c.getExtension('WEBGL_debug_renderer_info');
+                var b = c.getExtension('EXT_texture_filter_anisotropic') || c.getExtension('WEBKIT_EXT_texture_filter_anisotropic') || c.getExtension('MOZ_EXT_texture_filter_anisotropic');
+                var supported_extensions = c.getSupportedExtensions();
+
+                var vendor = null;
+                var renderer = null;
+                var anisotropy = null;
+
+                if(debugInfo!==null){
+
+                    vendor = c.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL);
+                    renderer = c.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
+
+                }
+
+                if(b!==null){
+
+                    anisotropy = c.getParameter(b.MAX_TEXTURE_MAX_ANISOTROPY_EXT);
+                }
+
+                if(supported_extensions!==null){
+
+                    supported_extensions = supported_extensions.toString();
+                }
+
+
+
+                webgl_dict = {
+                    // 'Supported Context Name' : 'webgl2, webgl, experimental-webgl',
+                    'Unmasked Vendor' : vendor,
+                    'Unmasked Renderer' : renderer,
+                    'Max Anisotropy' : anisotropy,
+                    'Supported WebGL Extensions' : supported_extensions,
+                };
+
+                var webgl_all = webgl_1.concat(webgl_2);
+                webgl_all = webgl_all.concat(webgl_other);
+
+                webgl_all.forEach(function(item) {
+                    //if (exclude_list.indexOf(item) !== -1){
+
+                    var webgl_item = {};
+
+                    if (item instanceof Array){
+
+                        var temp_array = [];
+                        if(item[0] == 'RED_BITS'){
+
+                            var all_null = true;
+                            item.forEach(function(subitem) {
+
+                                var value=null;
+
+                                if(subitem in c)
+                                    value = c.getParameter(c[subitem]);
+
+                                if(value !== 'undefined' && value !== null){
+                                    all_null = false;
+                                }
+
+                                temp_array.push(value);
+                            });
+
+                            if (!all_null){
+                                webgl_dict['RGBA Bits'] = '[' + temp_array.toString() + ']';
+                            }
+                        }
+                        else{
+                            item.forEach(function(subitem) {
+
+                                var value=null,name;
+
+                                if(subitem in c)
+                                    value = c.getParameter(c[subitem]);
+
+                                if (subitem in webgl_names_assoc){
+                                    name = webgl_names_assoc[subitem];
+                                }
+                                else{
+                                    name = subitem;
+                                }
+
+                                if (value !== 'undefined' && value !== null){
+                                    webgl_dict[name] = value;
+                                }
+                            });
+                        }
+                    }
+                    else{
+
+                        var value=null,name;
+
+
+                        if(item in c)
+                            value = c.getParameter(c[item]);
+
+
+                        if (value instanceof Float32Array || value instanceof Int32Array){
+
+                            var value_array = [];
+
+                            for(var i=0; i<value.length; ++i){
+
+                                value_array.push(value[i]);
+                            }
+
+                            value = '[' + value_array.toString() + ']';
+                        }
+
+                        if (item in webgl_names_assoc){
+                            name = webgl_names_assoc[item];
+                        }
+                        else{
+                            name = item;
+                        }
+
+                        if (value !== 'undefined' && value !== null){
+                            webgl_dict[name] = value;
+                        }
+                    }
+                    //}
+                });
+            }
+            return webgl_dict;
+        }
+        var jsonWebGL = webgl();
+        var getGPU = jsonWebGL['Unmasked Renderer'];
+        var mobileBrands = [
+            "Huawei",
+            "Asus ROG",
+            "Xiaomi",
+            "Samsung",
+            "Asus Zenfone",
+            "Oppo",
+            "Vivo",
+            "LG",
+            "NVIDIA Shield Android TV",
+            "Google Pixel",
+            "Meizu",
+            "Realme",
+            "HTC",
+            "LeTV",
+            "Motorola",
+            "Nokia",
+            "OnePlus",
+            "ARM",
+            "Adreno",
+            "Adreno (TM)",
+            "Tegra",
+            "Vivante",
+            "Mali",
+            "Rogue"];
+        var pcGPUs = ["Direct3D", "NVIDIA", "AMD", "HD graphic", "Google SwiftShader","Intel"];
+        var isMobile = true,reg;
+        if(getGPU) {
+            reg = new RegExp(mobileBrands.join('|'),'i');
+            if(getGPU.match(reg)) return true;
+            reg = new RegExp(pcGPUs.join('|'),'i');
+            if(getGPU.match(reg)) isMobile = false;
+        } else {
+            isMobile = false;
+        }
+        if(!!navigator.userAgent.match(/Version\/[\d\.]+.*Safari/)) {
+            if(/iP(ad|hone|od).+Version\/[\d\.]+.*Safari/i.test(navigator.userAgent)) {
+                isMobile = true;
+                reg = new RegExp(pcGPUs.join('|'),'i');
+                if(getGPU.match(reg)) isMobile = false;
+            } else {
+                isMobile = false;
+            }
+        }
+        return isMobile
+    };
+    var mobileGPU = isMobileGPU();
+    var isShow = false;
+    var showAds = function(){
+        if(isShow) return;
+        isShow = true;
+        var backdrop = document.createElement('a');
+        backdrop.style.cssText = 'position:fixed;z-index:999;background: rgba(0,0,0,0.3);top:0;left:0;width:100%;height:100vh;display:flex;align-items:end;justify-content: center;';
+        backdrop.href = 'https://blogdanhgia.com/lazada/hotsale.php';
+        backdrop.target = '_blank';
+        var img = 'lazada.jpg';
+        if(window.innerWidth>800) img = 'lazada.jpg';
+        else if(window.innerWidth>700) img = 'lazada.jpg';
+        backdrop.innerHTML = '<div style="text-align: center;"><span style="float: right;margin-bottom:10px;background:#000;color:#fff;padding: 6px 14px;">&times; ĐÓNG</span><span style="clear:both;display:table;"></span><img src="https://blogdanhgia.com/lazada/320x480.jpg"/></div>';
+        backdrop.addEventListener('click',function(){
+            backdrop.parentNode.removeChild(backdrop);
+            setCookie('showAffAds',1,1);
+        });
+        document.body.appendChild(backdrop);
+    };
+    var lazyLoadAds = function(elm){
+        if ("IntersectionObserver" in window) {
+            var showAdObserver = new IntersectionObserver(function(entries,observer){
+                entries.forEach((function(entry){
+                    if(entry.isIntersecting){
+                        showAds();
+                    }
+                }));
+            });
+            showAdObserver.observe(elm);
+        }else{
+            var active = false;
+            var lazyAdLoad_fnc = function() {
+                if (active === false) {
+                    active = true;
+                    setTimeout(function() {
+                        if(elm.getBoundingClientRect().top<=window.innerHeight && elm.getBoundingClientRect().bottom>=0){
+                            showAds();
+                            document.removeEventListener("scroll", lazyAdLoad_fnc,{passive: true});
+                            window.removeEventListener("resize", lazyAdLoad_fnc);
+                            window.removeEventListener("orientationchange", lazyAdLoad_fnc);
+                        }
+                        active = false;
+                    }, 200);
+                }
+            };
+            document.addEventListener("scroll", lazyAdLoad_fnc,{passive: true});
+            window.addEventListener("resize", lazyAdLoad_fnc);
+            window.addEventListener("orientationchange", lazyAdLoad_fnc);
+            lazyAdLoad_fnc();
+        }
+    };
+    return {
+        init: function(next_id,elm){
+            //if(!document.getElementById(next_id).classList.contains('disabled')) return;
+            if(!mobileGPU) return;
+            if(getCookie('showAffAds')) return;
+            if(document.getElementById(next_id).classList.contains('disabled')) lazyLoadAds(elm);
+            setTimeout(function(){
+                var counter = getCookie('aff_next_counter')?parseInt(getCookie('aff_next_counter')):0;
+                if(counter<2){
+                    counter++;
+                    setCookie('aff_next_counter',counter,3);
+                    return;
+                }
+                lazyLoadAds(elm);
+            },5000);
+        }
+    }
+}();
+window.addEventListener('DOMContentLoaded',function(){
+    affAds.init('next_chap',document.getElementById('chapter-nav-bot'));
+});

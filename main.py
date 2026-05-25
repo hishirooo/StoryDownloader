@@ -38,6 +38,18 @@ DOMAIN_MODULE_MAP = {
     # mtruyen
     "mtruyen.net": "mtruyen",
     "www.mtruyen.net": "mtruyen",
+    # erciyan
+    "erciyan.com": "erciyan",
+    "www.erciyan.com": "erciyan",
+    # biqu86
+    "biqu86.com": "biqu86",
+    "www.biqu86.com": "biqu86",
+    # truyencom
+    "truyencom.com": "truyencom",
+    "www.truyencom.com": "truyencom",
+    # khotruyenchu
+    "khotruyenchu.space": "khotruyenchu",
+    "www.khotruyenchu.space": "khotruyenchu",
 }
 
 def _strip_common_prefixes(domain: str) -> str:

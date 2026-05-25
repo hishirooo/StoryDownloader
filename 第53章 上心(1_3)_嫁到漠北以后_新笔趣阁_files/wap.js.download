@@ -1,0 +1,127 @@
+function dj(){
+var randads = {
+	ad_num : 3,
+	init : function(){
+		n = (Math.floor(Math.random()*randads.ad_num+1));
+		switch(n){
+		case 1:
+dj1();
+break;
+case 2:
+dj2();
+break;
+case 3:
+dj3();
+break;
+		}
+	}
+}
+randads.init();
+
+}
+
+function dj1(){
+
+}
+function dj2(){
+
+
+}
+function dj3(){
+
+}
+
+
+function dipiao(){
+var randads = {
+	ad_num : 3,
+	init : function(){
+		n = (Math.floor(Math.random()*randads.ad_num+1));
+		switch(n){
+		case 1:
+dp1();
+break;
+case 2:
+dp2();
+break;
+case 3:
+dp3();
+break;
+		}
+	}
+}
+randads.init();
+
+}
+
+function dp1(){
+
+
+}
+
+function dp2(){
+
+}
+
+function dp3(){
+
+}
+
+function load_ui(){
+
+	$(function(){
+	    //返回
+	    attachEvent($("#scrollUp"),function (){
+	        $('body,html').animate({
+	            scrollTop: 0
+	        }, 200);
+	        return false;
+	    });
+	    //返回 end
+
+	});
+
+	$(function(){
+			$(".navi").click(function(){
+			
+			if($(this).next(".dh_list").css("display")=="none"){
+				$(this).next(".dh_list").animate({height: 'toggle', opacity: 'toggle'}, "slow");
+			}else{
+				$(this).next(".dh_list").animate({height: 'toggle', opacity: 'toggle'}, "slow");
+			}
+		})
+	})
+
+
+	$(function(){
+		$(".list_title ul li").click(function(){
+			$(this).addClass("hover").siblings().removeClass("hover")
+			var i=$(this).index();
+			$(this).parent().parent().parent().children(".dtli").eq(i).show().siblings(".dtli").hide()
+			})
+		})
+
+	$(function(){
+		$(".tit_top li").click(function(){
+			$(this).addClass("hover").siblings().removeClass("hover")
+			var i=$(this).index();
+			$(this).parent().parent().parent().children(".dt2li").eq(i).show().siblings(".dt2li").hide()
+			})
+		})
+
+	$(function(){
+		$(".tit_top li").click(function(){
+			$(this).addClass("hover").siblings().removeClass("hover")
+			var i=$(this).index();
+			$(this).parent().parent().parent().children(".dt3li").eq(i).show().siblings(".dt3li").hide()
+			})
+		})
+
+	$(function(){
+		$(".jg_list li").click(function(){
+			$(this).addClass("hover").siblings().removeClass("hover")
+			var i=$(this).index();
+			$(this).parent().parent().parent().children(".jgbox").eq(i).show().siblings(".jgbox").hide()
+			})
+		})
+}
