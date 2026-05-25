@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-Downloader for https://khotruyenchu.space/.
+Downloader for https://www.22biqu.com/.
 
-Book sample:
-  https://khotruyenchu.space/truyen/huyen-giam-tien-toc/
+Book page sample:
+  https://www.22biqu.com/biqu117731/
 
-Chapter sample:
-  https://khotruyenchu.space/chuong-73-phan-sat/
+Chapter page sample:
+  https://www.22biqu.com/biqu117731/50946677.html
 """
 
 from __future__ import annotations
@@ -34,7 +34,6 @@ except ImportError:
 
     USE_CURL_CFFI = False
 
-
 try:
     from PIL import Image
 
@@ -42,28 +41,31 @@ try:
 except ImportError:
     HAS_PILLOW = False
 
-BASE_URL = "https://khotruyenchu.space/"
-DEFAULT_URL = "https://khotruyenchu.space/truyen/huyen-giam-tien-toc/"
+BASE_URL = "https://www.22biqu.com/"
+DEFAULT_URL = "https://www.22biqu.com/biqu117731/"
 OUTPUT_BASE = Path("output")
 
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/148.0.0.0 Safari/537.36 Edg/148.0.0.0"
+        "Chrome/124.0.0.0 Safari/537.36"
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "vi,en-US;q=0.9,en;q=0.8,zh;q=0.7",
+    "Accept-Language": "zh-CN,zh;q=0.9,vi;q=0.7,en;q=0.6",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
     "Referer": BASE_URL,
     "Upgrade-Insecure-Requests": "1",
 }
 
 TIMEOUT = 25
-SLEEP_BETWEEN_PAGES = 0.25
-SLEEP_BETWEEN_CHAPS = 0.25
+SLEEP_BETWEEN_PAGES = 0.5
+SLEEP_BETWEEN_CHAPS = 0.6
 CHAPTER_RETRIES = 4
 RETRY_STATUS = {403, 429, 500, 502, 503, 504}
 MAX_COVER_SIZE = (1600, 2400)
+MAX_CHAPTER_PARTS = 20
 
 
 class FetchHtmlError(RuntimeError):
@@ -103,11 +105,12 @@ def slugify_vi(value: str) -> str:
 
 
 def _looks_like_local_file(value: str) -> bool:
-    if not value:
+    if not value or re.match(r"^[a-z][a-z0-9+.-]*://", value, flags=re.I):
         return False
-    if re.match(r"^https?://", value, flags=re.I):
+    try:
+        return Path(value).exists()
+    except OSError:
         return False
-    return Path(value).exists()
 
 
 def _ensure_url(url: str) -> str:
@@ -123,29 +126,30 @@ def _ensure_url(url: str) -> str:
 
 def _absolute_url(page_url: str, href: str) -> str:
     href = html.unescape(href or "").strip()
-    if not href:
-        return page_url
+    if not href or href.startswith("javascript:"):
+        return ""
     if href.startswith("//"):
         return "https:" + href
-    if _looks_like_local_file(page_url) and re.match(r"^https?://", href, flags=re.I):
-        return href
     if _looks_like_local_file(page_url):
+        if re.match(r"^https?://", href, flags=re.I):
+            return href
         if href.startswith("./") or href.startswith("../"):
             return str((Path(page_url).parent / href).resolve())
         if not re.match(r"^[a-z][a-z0-9+.-]*:", href, flags=re.I):
-            return str((Path(page_url).parent / href).resolve())
+            return urljoin(BASE_URL, href)
     base = page_url if urlparse(page_url).scheme else BASE_URL
     return urljoin(base, href)
 
-
-def _http_referer(value: str) -> str:
-    return value if urlparse(value or "").scheme in {"http", "https"} else BASE_URL
 
 def _normalized_url(url: str) -> str:
     parsed = urlparse(url)
     if not parsed.scheme:
         return str(Path(url))
     return parsed._replace(fragment="", query="").geturl().rstrip("/")
+
+
+def _http_referer(value: str) -> str:
+    return value if urlparse(value or "").scheme in {"http", "https"} else BASE_URL
 
 
 def _http_get(url: str, *, referer: Optional[str] = None):
@@ -178,7 +182,7 @@ def _detect_encoding(content: bytes, response=None) -> str:
         enc = getattr(response, attr, None) if response is not None else None
         if enc:
             candidates.append(enc)
-    candidates.extend(["utf-8", "cp1258", "windows-1258"])
+    candidates.extend(["utf-8", "gb18030", "gbk"])
     for enc in candidates:
         try:
             content.decode(enc)
@@ -221,243 +225,252 @@ def _fetch_html(url: str, tries: int = 3, *, referer: Optional[str] = None) -> B
     return soup
 
 
-def _canonical_url(soup: BeautifulSoup, page_url: str) -> str:
-    canonical = soup.select_one("link[rel='canonical'][href]")
-    if canonical and canonical.get("href"):
-        return _absolute_url(page_url, canonical["href"])
-    return page_url
-
-
-def _archive_base_url(url: str) -> str:
-    if _looks_like_local_file(url):
-        return DEFAULT_URL
-    parsed = urlparse(url)
-    path = re.sub(r"/page/\d+/?$", "/", parsed.path.rstrip("/") + "/")
-    return parsed._replace(path=path, query="", fragment="").geturl()
-
-
-def _is_chapter_url(url: str) -> bool:
-    return bool(re.search(r"/chuong-[^/]+/?$", urlparse(url).path, flags=re.I))
-
-
-def _book_url_from_chapter(soup: BeautifulSoup, chapter_url: str) -> str:
-    article = soup.find("article")
-    if article:
-        for cls in article.get("class", []):
-            if cls.startswith("bo_truyen-"):
-                return f"{BASE_URL.rstrip('/')}/truyen/{cls.replace('bo_truyen-', '')}/"
-    for a in soup.select("a[href*='/truyen/']"):
-        href = a.get("href", "")
-        if "/truyen/" in href:
-            return _archive_base_url(_absolute_url(chapter_url, href))
-    return DEFAULT_URL
-
-
-def _meta_value(hero: BeautifulSoup, label: str) -> str:
-    if not hero:
-        return ""
-    for span in hero.select(".truyen-meta span"):
-        text = _clean_spaces(span.get_text(" ", strip=True))
-        if label.lower() in text.lower():
-            strong = span.find("strong")
-            value = _text(strong) or re.sub(rf".*?{re.escape(label)}\s*:?", "", text, flags=re.I).strip()
-            return _clean_spaces(value)
+def _meta_content(soup: BeautifulSoup, *names: str) -> str:
+    for name in names:
+        tag = soup.find("meta", attrs={"property": name}) or soup.find("meta", attrs={"name": name})
+        if tag and tag.get("content"):
+            return _clean_spaces(tag["content"])
     return ""
 
 
-def _local_image_url(page_url: str, img) -> str:
-    if not img:
-        return ""
-    if _looks_like_local_file(page_url):
-        src = (img.get("src") or img.get("data-src") or "").strip()
-        if src.startswith("./") or src.startswith("../"):
-            return str((Path(page_url).parent / src).resolve())
-        if src and _looks_like_local_file(src):
-            return str(Path(src).resolve())
-    return (img.get("data-src") or img.get("src") or "").strip()
+def _book_id_from_url(url: str) -> str:
+    match = re.search(r"/biqu(\d+)/", urlparse(url).path)
+    return match.group(1) if match else ""
 
 
-def _get_total_pages(soup: BeautifulSoup) -> int:
-    nums: List[int] = []
-    title = _text(soup.find("title"))
-    match = re.search(r"Page\s+\d+\s+of\s+(\d+)", title, flags=re.I)
-    if match:
-        nums.append(int(match.group(1)))
-    for node in soup.select(".page-numbers"):
-        text = _clean_spaces(node.get_text(" ", strip=True))
-        match = re.search(r"/\s*(\d+)$", text)
-        if match:
-            nums.append(int(match.group(1)))
-        elif text.isdigit():
-            nums.append(int(text))
-        href = node.get("href") if hasattr(node, "get") else ""
-        match = re.search(r"/page/(\d+)/", href or "")
-        if match:
-            nums.append(int(match.group(1)))
-    for link in soup.select("link[rel='next'][href], link[rel='prev'][href], a[href*='/page/']"):
-        match = re.search(r"/page/(\d+)/", link.get("href", ""))
-        if match:
-            nums.append(int(match.group(1)))
-    return max(nums) if nums else 1
+def _book_dir_from_url(url: str) -> str:
+    match = re.search(r"(/biqu\d+/)", urlparse(url).path)
+    return match.group(1) if match else ""
 
 
-def _build_page_url(book_url: str, page: int) -> str:
-    base = _archive_base_url(book_url).rstrip("/") + "/"
-    if page <= 1:
-        return base
-    return f"{base}page/{page}/"
+def _is_chapter_url(page_url: str, chapter_url: str) -> bool:
+    target = urlparse(chapter_url)
+    if target.netloc and urlparse(page_url).netloc and target.netloc != urlparse(page_url).netloc:
+        return False
+    if not re.search(r"/biqu\d+/\d+(?:_\d+)?\.html$", target.path):
+        return False
+    page_book_id = _book_id_from_url(page_url)
+    target_book_id = _book_id_from_url(chapter_url)
+    return not page_book_id or not target_book_id or page_book_id == target_book_id
 
 
-def _extract_book_info(soup: BeautifulSoup, page_url: str) -> Dict[str, object]:
-    canonical = _canonical_url(soup, page_url)
-    book_url = _archive_base_url(canonical)
-    hero = soup.select_one(".truyen-hero-box")
+def _is_catalog_url(url: str) -> bool:
+    return bool(re.search(r"/biqu\d+/(?:\d+/)?$", urlparse(url).path))
 
+
+def _chapter_number(title: str) -> int:
+    match = re.search(r"\u7b2c\s*(\d+)\s*\u7ae0", title or "")
+    return int(match.group(1)) if match else 0
+
+
+def _chapter_base_url(url: str) -> str:
+    parsed = urlparse(url)
+    path = re.sub(r"_(\d+)(\.html)$", r"\2", parsed.path)
+    return parsed._replace(path=path, query="", fragment="").geturl()
+
+
+def _get_book_info(soup: BeautifulSoup, page_url: str = DEFAULT_URL) -> Dict[str, str]:
     title = (
-        _text(hero.select_one(".truyen-title")) if hero else ""
-    ) or _text(soup.select_one("h1.truyen-title, h1.page-title, .hero-section h1"))
-    title = re.sub(r"^Bộ truyện\s+", "", title, flags=re.I).strip()
-    if not title:
-        title = _text(soup.find("title"))
-        title = re.sub(r"\s+Archives.*$", "", title, flags=re.I)
-        title = re.sub(r"\s+-\s+Page\s+\d+\s+of\s+\d+.*$", "", title, flags=re.I)
-        title = re.sub(r"\s+-\s+Tàng Kinh.*$", "", title, flags=re.I)
+        _meta_content(soup, "og:novel:book_name", "og:title")
+        or _text(soup.select_one(".info .top h1"))
+        or _text(soup.select_one(".info h1"))
+        or re.sub(r"\(.*$", "", _text(soup.find("title")))
+    )
+    author = _meta_content(soup, "og:novel:author")
+    category = _meta_content(soup, "og:novel:category")
+    status = _meta_content(soup, "og:novel:status")
+    update_time = _meta_content(soup, "og:novel:update_time")
+    latest_chapter = _meta_content(soup, "og:novel:lastest_chapter_name")
+    latest_url = _meta_content(soup, "og:novel:lastest_chapter_url")
+    cover_url = _meta_content(soup, "og:image")
+    intro = _meta_content(soup, "description")
 
-    author = _meta_value(hero, "Tác giả")
-    genre = _meta_value(hero, "Thể loại")
-    status = _meta_value(hero, "Tình trạng")
+    for p in soup.select(".info p, .top p"):
+        text = _clean_spaces(p.get_text(" ", strip=True))
+        if not author and "\u4f5c" in text and "\u8005" in text:
+            author = re.sub(r"^.*?\uff1a", "", text).strip()
+        if not category and "\u7c7b" in text and "\u522b" in text:
+            category = re.sub(r"^.*?\uff1a", "", text).strip()
+        if not status and "\u72b6" in text and "\u6001" in text:
+            status = re.sub(r"^.*?\uff1a", "", text).strip()
+        if not update_time and "\u66f4\u65b0\u65f6\u95f4" in text:
+            update_time = re.sub(r"^.*?\uff1a", "", text).strip()
+        if not latest_chapter and "\u6700\u65b0\u7ae0\u8282" in text:
+            latest_chapter = re.sub(r"^.*?\uff1a", "", text).strip()
 
-    intro_node = hero.select_one(".truyen-desc") if hero else None
-    if not intro_node:
-        intro_node = soup.select_one(".taxonomy-description")
-    intro = _clean_spaces(intro_node.get_text("\n", strip=True) if intro_node else "")
-    if not intro:
-        meta = soup.select_one("meta[property='og:description'][content], meta[name='description'][content]")
-        intro = _clean_spaces(meta.get("content", "") if meta else "")
+    if latest_url:
+        latest_url = _absolute_url(page_url, latest_url)
+    if cover_url:
+        cover_url = _absolute_url(page_url, cover_url)
+    else:
+        img = soup.select_one(".imgbox img[src], .book-img img[src], .info img[src]")
+        if img:
+            cover_url = _absolute_url(page_url, img.get("src", ""))
 
-    cover_url = ""
-    img = hero.select_one(".truyen-cover img") if hero else None
-    if not img:
-        img = soup.select_one("img.wp-post-image, img[data-src*='cover'], img[src*='cover']")
-    if img:
-        cover_url = _local_image_url(page_url, img)
-        if cover_url and not _looks_like_local_file(cover_url):
-            cover_url = _absolute_url(page_url, cover_url)
+    book_url = _meta_content(soup, "og:novel:url", "og:novel:read_url")
+    canonical = soup.select_one("link[rel='canonical'][href]")
+    if not book_url and canonical and _is_catalog_url(canonical.get("href", "")):
+        book_url = canonical.get("href", "")
+    if not book_url:
+        for a in soup.select(".layout-tit a[href], .con_top a[href]"):
+            href = _absolute_url(page_url, a.get("href", ""))
+            if _is_catalog_url(href):
+                book_url = href
+    if not book_url:
+        book_url = page_url
+    book_url = _absolute_url(page_url, book_url)
 
-    latest_node = soup.select_one(".btn-chuong-moi[href], .truyen-recent a[href]")
-    latest_chapter = _text(latest_node) if latest_node else ""
-    latest_chapter_url = _absolute_url(page_url, latest_node.get("href", "")) if latest_node else ""
+    page_text = _clean_spaces(soup.get_text(" ", strip=True))
+    total_chapters = 0
+    nums = [_chapter_number(a.get_text(" ", strip=True)) for a in soup.select("a[href]")]
+    nums = [n for n in nums if n > 0]
+    if nums:
+        total_chapters = max(nums)
+    match = re.search(r"\u5171\s*(\d+)\s*\u7ae0", page_text)
+    if match:
+        total_chapters = max(total_chapters, int(match.group(1)))
 
     return {
-        "title": _clean_spaces(title) or "Truyen",
+        "title": _clean_spaces(title) or "Unknown",
         "author": _clean_spaces(author) or "Unknown",
-        "category": genre,
-        "genre": genre,
-        "status": status,
-        "intro": intro,
+        "category": _clean_spaces(category),
+        "genre": _clean_spaces(category),
+        "status": _clean_spaces(status),
+        "update_time": _clean_spaces(update_time),
+        "latest_chapter": _clean_spaces(latest_chapter),
+        "latest_chapter_url": latest_url,
+        "intro": _clean_spaces(intro),
         "cover_url": cover_url,
         "url": book_url,
-        "total_pages": _get_total_pages(soup),
-        "latest_chapter": _clean_spaces(latest_chapter),
-        "latest_chapter_url": latest_chapter_url,
+        "book_id": _book_id_from_url(book_url),
+        "total_chapters": total_chapters,
     }
 
 
-def _extract_chapters_from_page(soup: BeautifulSoup, page_url: str) -> List[Dict[str, str]]:
-    selectors = [
-        "article.entry-card h2.entry-title a[href]",
-        ".entries article h2.entry-title a[href]",
-        ".entries article h2 a[href]",
-        "article h2.entry-title a[href]",
-    ]
-    anchors = []
-    for selector in selectors:
-        anchors = soup.select(selector)
-        if anchors:
-            break
+def _catalog_page_number(url: str) -> int:
+    path = urlparse(url).path.rstrip("/")
+    match = re.search(r"/biqu\d+/(\d+)$", path)
+    return int(match.group(1)) if match else 1
 
-    chapters: List[Dict[str, str]] = []
-    seen: set[str] = set()
-    for a in anchors:
-        title = _clean_spaces(a.get("title") or _text(a))
-        url = _absolute_url(page_url, a.get("href", ""))
-        if not title or not re.search(r"(Chương|/chuong-)", title + " " + url, flags=re.I):
-            continue
+
+def _get_catalog_urls(soup: BeautifulSoup, page_url: str) -> List[str]:
+    urls: List[str] = []
+    if _is_catalog_url(page_url):
+        urls.append(page_url)
+    for option in soup.select("select#indexselect option[value]"):
+        href = _absolute_url(page_url, option.get("value", ""))
+        if href and _is_catalog_url(href):
+            urls.append(href)
+    for a in soup.select(".index-container a[href]"):
+        href = _absolute_url(page_url, a.get("href", ""))
+        if href and _is_catalog_url(href):
+            urls.append(href)
+
+    seen = set()
+    result = []
+    for url in urls:
         key = _normalized_url(url)
         if key in seen:
             continue
         seen.add(key)
-        chapters.append({"title": title, "url": url})
-    return chapters
+        result.append(url)
+    return sorted(result, key=_catalog_page_number)
 
 
-def _fetch_all_chapters(book_info: Dict[str, object], first_soup: BeautifulSoup, *, local_input: bool = False) -> List[Dict[str, str]]:
-    book_url = str(book_info.get("url") or DEFAULT_URL)
-    total_pages = int(book_info.get("total_pages") or _get_total_pages(first_soup) or 1)
+def _extract_chapters_from_catalog(soup: BeautifulSoup, page_url: str) -> List[Dict[str, str]]:
     chapters: List[Dict[str, str]] = []
-    seen: set[str] = set()
-
-    def add_from(soup: BeautifulSoup, page_url: str) -> None:
-        for chapter in _extract_chapters_from_page(soup, page_url):
-            key = _normalized_url(chapter["url"])
-            if key in seen:
+    containers = soup.select("ul.section-list")
+    if not containers:
+        containers = soup.select("#list, .chapter-list, .listmain")
+    for container in containers:
+        for a in container.select("a[href]"):
+            title = _clean_spaces(a.get_text(" ", strip=True))
+            url = _absolute_url(page_url, a.get("href", ""))
+            if not title or not _is_chapter_url(page_url, url):
                 continue
-            seen.add(key)
-            chapters.append(chapter)
-
-    add_from(first_soup, book_url)
-    if local_input:
-        return chapters
-
-    for page in range(2, total_pages + 1):
-        page_url = _build_page_url(book_url, page)
-        try:
-            soup = _fetch_html(page_url, referer=book_url)
-        except Exception as exc:
-            _safe_print(f"Canh bao: bo qua page muc luc {page}: {exc}")
-            break
-        add_from(soup, page_url)
-        time.sleep(SLEEP_BETWEEN_PAGES)
+            chapters.append({"title": title, "url": _chapter_base_url(url)})
     return chapters
+
+
+def _book_url_from_chapter(soup: BeautifulSoup, chapter_url: str) -> str:
+    for a in soup.select(".layout-tit a[href], .con_top a[href]"):
+        href = _absolute_url(chapter_url, a.get("href", ""))
+        if _is_catalog_url(href):
+            return href
+    book_dir = _book_dir_from_url(chapter_url)
+    if book_dir:
+        parsed = urlparse(chapter_url)
+        return parsed._replace(path=book_dir, query="", fragment="").geturl()
+    return DEFAULT_URL
 
 
 def getText(url: str = DEFAULT_URL) -> Dict:
     url = _ensure_url(url)
-    soup = _fetch_html(url)
     local_input = _looks_like_local_file(url)
+    soup = _fetch_html(url)
 
-    if not local_input and _is_chapter_url(url):
+    if _is_chapter_url(url, url):
         book_url = _book_url_from_chapter(soup, url)
-        soup = _fetch_html(book_url, referer=url)
-        url = book_url
+        if not local_input:
+            soup = _fetch_html(book_url, referer=_http_referer(url))
+            url = book_url
 
-    info = _extract_book_info(soup, url)
-    first_soup = soup
-    if not local_input and _archive_base_url(_canonical_url(soup, url)) != str(info["url"]):
-        first_soup = _fetch_html(str(info["url"]), referer=url)
+    info = _get_book_info(soup, url)
+    catalog_urls = [url] if local_input else _get_catalog_urls(soup, str(info.get("url") or url))
+    chapters_by_key: Dict[str, Dict[str, str]] = {}
 
-    chapters = _fetch_all_chapters(info, first_soup, local_input=local_input)
+    if not catalog_urls:
+        catalog_urls = [str(info.get("url") or url)]
+
+    for catalog_url in catalog_urls:
+        if local_input and _normalized_url(catalog_url) != _normalized_url(url):
+            continue
+        try:
+            catalog_soup = soup if _normalized_url(catalog_url) == _normalized_url(url) else _fetch_html(catalog_url, referer=info.get("url") or url)
+        except Exception as exc:
+            _safe_print(f"Canh bao: bo qua trang muc luc {catalog_url}: {exc}")
+            continue
+        for chapter in _extract_chapters_from_catalog(catalog_soup, catalog_url):
+            key = _normalized_url(chapter["url"])
+            chapters_by_key[key] = chapter
+        if not local_input and _normalized_url(catalog_url) != _normalized_url(url):
+            time.sleep(SLEEP_BETWEEN_PAGES)
+
+    chapters = list(chapters_by_key.values())
+    chapters.sort(key=lambda item: (_chapter_number(item.get("title", "")) or 10**9, item.get("url", "")))
+
     if chapters:
         info["latest_chapter"] = chapters[-1]["title"]
         info["latest_chapter_url"] = chapters[-1]["url"]
-    info["total_chapters"] = len(chapters)
+        info["total_chapters"] = len(chapters)
     return {**info, "chapters": chapters}
 
 
 def _chapter_title_from_page(soup: BeautifulSoup, fallback: str = "") -> str:
-    title = _text(soup.select_one("h1.page-title, article h1, h1.entry-title, h1"))
+    title = _text(soup.select_one("h1.title") or soup.select_one(".reader-main h1") or soup.select_one("h1"))
     if not title:
         title = _text(soup.find("title"))
-        title = re.sub(r"^\s*Huyền Giám Tiên Tộc\s+-\s+", "", title, flags=re.I)
-        title = re.sub(r"\s+-\s+Tàng Kinh.*$", "", title, flags=re.I)
-    return _clean_spaces(title) or fallback or "Chapter"
+        title = re.sub(r"_.*$", "", title)
+    return _clean_spaces(title) or fallback or "\u7ae0\u8282"
+
+
+def _next_part_url(soup: BeautifulSoup, current_url: str) -> str:
+    for a in soup.select("a[href]"):
+        text = _clean_spaces(a.get_text(" ", strip=True))
+        if text == "\u4e0b\u4e00\u9875":
+            href = _absolute_url(current_url, a.get("href", ""))
+            if href and _chapter_base_url(href) == _chapter_base_url(current_url):
+                return href
+    return ""
 
 
 def _clean_chapter_lines(raw_text: str, title: str = "") -> List[str]:
+    raw_text = html.unescape(raw_text or "")
+    raw_text = raw_text.replace("\xa0", " ").replace("\r\n", "\n").replace("\r", "\n")
     trash = re.compile(
-        r"(Chương trước|Chương sau|Mục lục|Cỡ chữ|Giao diện|Tìm kiếm truyện|Top xếp hạng|"
-        r"Độc giả yêu cầu|Đăng k[ií] truyện|Comments?|Leave a Reply|Label \{\}|adsbygoogle|"
-        r"khotruyenchu\.space|Tàng Kinh Các|The Converter|font size)",
+        r"(www\.22biqu\.com|\u7b14\u8da3\u9601|\u6700\u65b0\u5730\u5740|\u8bb0\u4f4f\u672c\u7ad9|"
+        r"\u624b\u673a\u9605\u8bfb|\u4e0a\u4e00\u7ae0|\u4e0b\u4e00\u9875|\u4e0b\u4e00\u7ae0|\u76ee\u5f55|"
+        r"\u540c\u7c7b\u70ed\u95e8|\u70b9\u51fb\u4e0b\u8f7d)",
         flags=re.I,
     )
     lines: List[str] = []
@@ -474,10 +487,10 @@ def _clean_chapter_lines(raw_text: str, title: str = "") -> List[str]:
 
 
 def _extract_chapter_paragraphs(soup: BeautifulSoup, title: str = "") -> List[str]:
-    content = soup.select_one(".entry-content")
+    content = soup.select_one("#content") or soup.select_one(".content")
     if not content:
         candidates = [
-            node for node in soup.select("article, main, .content")
+            node for node in soup.select(".reader-main, article, main")
             if len(_clean_spaces(node.get_text(" ", strip=True))) > 500
         ]
         content = max(candidates, key=lambda node: len(_clean_spaces(node.get_text(" ", strip=True)))) if candidates else None
@@ -485,16 +498,30 @@ def _extract_chapter_paragraphs(soup: BeautifulSoup, title: str = "") -> List[st
         return []
 
     content = BeautifulSoup(str(content), "html.parser")
-    for node in content.find_all(["script", "style", "noscript", "iframe", "ins", "select", "input", "button"]):
+    for node in content.find_all(["script", "style", "ins", "iframe", "select", "input"]):
         node.decompose()
-    for node in content.select(
-        ".story-navigation, .reading-tools-bar, .code-block, .wpd-form, .wpdiscuz, "
-        "#comments, .comments-area, .sharedaddy, .post-navigation, .adsbygoogle, .google-auto-placed"
-    ):
+    for node in content.select(".ads, .ad, .readad, .reader-fun, .section-opt, .content-tip"):
         node.decompose()
     for br in content.find_all("br"):
         br.replace_with("\n")
     return _clean_chapter_lines(content.get_text("\n", strip=False), title=title)
+
+
+def _chapter_content_html_from_pages(pages: List[BeautifulSoup], title: str) -> Tuple[str, str]:
+    paragraphs: List[str] = []
+    for page in pages:
+        paragraphs.extend(_extract_chapter_paragraphs(page, title=title))
+    seen_blank = False
+    cleaned: List[str] = []
+    for paragraph in paragraphs:
+        if paragraph:
+            cleaned.append(paragraph)
+            seen_blank = False
+        elif not seen_blank:
+            seen_blank = True
+    text = "\n".join(cleaned)
+    content_html = "\n".join(f"<p>{html.escape(p)}</p>" for p in cleaned) or "<p>(Khong co noi dung)</p>"
+    return content_html, text
 
 
 def fetch_chapter_content(
@@ -505,17 +532,36 @@ def fetch_chapter_content(
     book_title: str = "",
 ) -> Dict:
     url = _ensure_url(url)
+    local_input = _looks_like_local_file(url)
     last_status: Optional[int] = None
     for attempt in range(1, retries + 1):
         try:
-            soup, status_code = _fetch_html_with_status(url, tries=1, referer=BASE_URL)
+            first_soup, status_code = _fetch_html_with_status(url, tries=1, referer=BASE_URL)
             last_status = status_code if isinstance(status_code, int) else None
-            title = _chapter_title_from_page(soup, fallback=fallback_title)
-            paragraphs = _extract_chapter_paragraphs(soup, title=title)
-            if not paragraphs:
+            title = _chapter_title_from_page(first_soup, fallback=fallback_title)
+            pages = [first_soup]
+            seen = {_normalized_url(url)}
+            current_url = url
+            current_soup = first_soup
+
+            while len(pages) < MAX_CHAPTER_PARTS:
+                next_url = _next_part_url(current_soup, current_url)
+                if not next_url:
+                    break
+                if local_input and not _looks_like_local_file(next_url):
+                    break
+                key = _normalized_url(next_url)
+                if key in seen:
+                    break
+                seen.add(key)
+                time.sleep(SLEEP_BETWEEN_PAGES)
+                current_soup = _fetch_html(next_url, referer=_http_referer(current_url))
+                current_url = next_url
+                pages.append(current_soup)
+
+            content_html, text = _chapter_content_html_from_pages(pages, title)
+            if not _clean_spaces(text):
                 raise FetchHtmlError("No chapter content", last_status)
-            content_html = "\n".join(f"<p>{html.escape(p)}</p>" for p in paragraphs)
-            text = "\n".join(paragraphs)
             time.sleep(SLEEP_BETWEEN_CHAPS)
             return {
                 "title": title,
@@ -523,6 +569,7 @@ def fetch_chapter_content(
                 "text": text,
                 "url": url,
                 "status_code": status_code,
+                "parts": len(pages),
             }
         except FetchHtmlError as exc:
             last_status = exc.status_code
@@ -543,7 +590,7 @@ def fetch_chapter_content(
 def _chapter_html_doc(title: str, content_html: str, source_url: str = "") -> str:
     source = f'<p class="source"><a href="{html.escape(source_url)}">{html.escape(source_url)}</a></p>' if source_url else ""
     return f"""<!DOCTYPE html>
-<html lang="vi">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8"/>
   <title>{html.escape(title)}</title>
@@ -560,18 +607,17 @@ def _chapter_html_doc(title: str, content_html: str, source_url: str = "") -> st
 
 
 def _chapter_html_path(book_dir: str | Path, idx: int, title: str = "") -> Path:
-    Path(book_dir).mkdir(parents=True, exist_ok=True)
-    suffix = f" - {_safe_filename(title, 110)}" if title else ""
-    return Path(book_dir) / f"{idx:04d}{suffix}.html"
+    html_dir = Path(book_dir) / "html"
+    html_dir.mkdir(parents=True, exist_ok=True)
+    suffix = f" - {_safe_filename(title, 100)}" if title else ""
+    return html_dir / f"{idx:04d}{suffix}.html"
 
 
 def _find_cached_chapter_path(book_dir: str | Path, idx: int) -> Optional[Path]:
-    root = Path(book_dir)
-    matches = sorted(root.glob(f"{idx:04d}*.html")) if root.exists() else []
-    if matches:
-        return matches[0]
-    html_dir = root / "html"
-    matches = sorted(html_dir.glob(f"{idx:04d}*.html")) if html_dir.exists() else []
+    html_dir = Path(book_dir) / "html"
+    if not html_dir.exists():
+        return None
+    matches = sorted(html_dir.glob(f"{idx:04d}*.html"))
     return matches[0] if matches else None
 
 
@@ -608,24 +654,20 @@ def _is_failed_chapter_data(data: Dict[str, object]) -> bool:
 
 
 def _write_chapter_html(data: Dict[str, str], book_dir: str | Path, idx: int, source_url: str = "") -> Path:
-    html_path = _chapter_html_path(book_dir, idx, data.get("title") or f"Chuong {idx}")
-    html_path.write_text(
-        _chapter_html_doc(data.get("title") or f"Chuong {idx}", data.get("content_html") or "", data.get("url") or source_url),
-        encoding="utf-8",
-    )
+    html_path = _chapter_html_path(book_dir, idx, data.get("title") or f"Chapter {idx}")
+    html_path.write_text(_chapter_html_doc(data.get("title") or f"Chapter {idx}", data.get("content_html") or "", data.get("url") or source_url), encoding="utf-8")
     data["html_path"] = str(html_path)
     return html_path
 
 
 def _save_chapter_html(chapter: Dict[str, str], idx: int, book_dir: str | Path, *, force: bool = False) -> Dict[str, str]:
-    cached_path = _find_cached_chapter_path(book_dir, idx)
-    if cached_path and not force:
-        data = _read_cached_chapter(cached_path)
+    cached = _find_cached_chapter_path(book_dir, idx)
+    if cached and not force:
+        data = _read_cached_chapter(cached)
         if not _is_failed_chapter_data(data):
             return data
-    data = fetch_chapter_content(chapter["url"], fallback_title=chapter.get("title", f"Chuong {idx}"))
-    if not _is_failed_chapter_data(data):
-        _write_chapter_html(data, book_dir, idx, chapter.get("url", ""))
+    data = fetch_chapter_content(chapter["url"], fallback_title=chapter.get("title", ""))
+    _write_chapter_html(data, book_dir, idx, chapter.get("url", ""))
     return data
 
 
@@ -640,7 +682,7 @@ def _normalize_range(total: int, start: int = 1, end: Optional[int] = None) -> T
 
 
 def download_chapters(
-    book_info: Dict[str, object],
+    book_info: Dict[str, str],
     chapters: List[Dict[str, str]],
     book_dir: str | Path,
     *,
@@ -649,21 +691,33 @@ def download_chapters(
     force: bool = False,
 ) -> List[Dict[str, str]]:
     start, end = _normalize_range(len(chapters), start, end)
+    selected_total = end - start + 1
     downloaded: List[Dict[str, str]] = []
-    for idx in range(start, end + 1):
-        data = _save_chapter_html(chapters[idx - 1], idx, book_dir, force=force)
+    _safe_print(f"Bat dau tai/cache {selected_total} chuong vao: {book_dir}")
+    for done, idx in enumerate(range(start, end + 1), 1):
+        chapter = chapters[idx - 1]
+        data = _save_chapter_html(chapter, idx, book_dir, force=force)
         downloaded.append(data)
-        _safe_print(chapter_log_line(idx - start + 1, end - start + 1, data.get("status_code", "ERR"), idx, len(chapters), data.get("title") or chapters[idx - 1].get("title") or ""))
+        _safe_print(
+            chapter_log_line(
+                done,
+                selected_total,
+                data.get("status_code", "ERR"),
+                idx,
+                len(chapters),
+                data.get("title") or chapter.get("title") or "",
+            )
+        )
+    _safe_print(f"Hoan tat tai/cache {selected_total} chuong.")
     return downloaded
 
 
 def save_all_chapters_to_html(title: str, chapters: List[Dict[str, str]], out_dir: str, start: int = 1, end=None) -> None:
-    book_info = {"title": title}
-    download_chapters(book_info, chapters, out_dir, start=start, end=end)
+    download_chapters({"title": title}, chapters, out_dir, start=start, end=end)
 
 
 def _selected_chapter_data(
-    book_info: Dict[str, object],
+    book_info: Dict[str, str],
     chapters: List[Dict[str, str]],
     book_dir: str | Path,
     *,
@@ -685,7 +739,7 @@ def _selected_chapter_data(
 
 
 def build_epub(
-    book_info: Dict[str, object],
+    book_info: Dict[str, str],
     chapters: List[Dict[str, str]],
     book_dir: str | Path,
     *,
@@ -699,24 +753,25 @@ def build_epub(
     book_dir = Path(book_dir)
     book_dir.mkdir(parents=True, exist_ok=True)
     start, end = _normalize_range(len(chapters), start, end)
-    selected = chapters[start - 1 : end]
+    selected_chapters = chapters[start - 1 : end]
     chapters_data = _selected_chapter_data(book_info, chapters, book_dir, start=start, end=end)
     suffix = "" if start == 1 and end == len(chapters) else f"_{start:04d}-{end:04d}"
-    epub_path = book_dir / f"{_safe_filename(str(book_info.get('title', 'Truyen')))}{suffix}.epub"
+    epub_path = book_dir / f"{_safe_filename(book_info.get('title', 'Truyen'))}{suffix}.epub"
+
     noise = io.StringIO()
     with redirect_stdout(noise):
         epub_builder.create_epub(
-            book_url=str(book_info.get("url", "")),
-            book_title=str(book_info.get("title", "Truyen")),
-            author=str(book_info.get("author", "Unknown")),
-            chapters=selected,
+            book_url=book_info.get("url", ""),
+            book_title=book_info.get("title", "Truyen"),
+            author=book_info.get("author", "Unknown"),
+            chapters=selected_chapters,
             fetch_fn=fetch_chapter_content,
             cover_bytes=cover_bytes,
             cover_ext=cover_ext or ".jpg",
             out_epub_path=str(epub_path),
-            html_cache_dir=str(book_dir),
+            html_cache_dir=None,
             chapters_data=chapters_data,
-            language="vi",
+            language="zh-CN",
             tags=book_info.get("category", ""),
             book_info=book_info,
         )
@@ -725,7 +780,7 @@ def build_epub(
 
 
 def _download_cover(cover_url: str) -> Tuple[Optional[bytes], Optional[str]]:
-    if not cover_url:
+    if not cover_url or cover_url.startswith("data:"):
         return None, None
     if _looks_like_local_file(cover_url):
         path = Path(cover_url)
@@ -762,67 +817,99 @@ def _resize_cover(content: bytes, ext: str) -> Tuple[bytes, str]:
         _safe_print(f"Khong xu ly duoc cover bang Pillow: {exc}")
         return content, ext
 
-def _load_cover(book_info: Dict[str, object], book_dir: Path) -> Tuple[Optional[bytes], Optional[str]]:
-    cover_url = str(book_info.get("cover_url") or "")
+
+def _load_cover(book_info: Dict[str, str], book_dir: Path) -> Tuple[Optional[bytes], Optional[str]]:
+    cover_url = book_info.get("cover_url") or ""
     cover_bytes, cover_ext = _download_cover(cover_url)
     if cover_bytes and cover_ext:
         cover_bytes, cover_ext = _resize_cover(cover_bytes, cover_ext)
-        book_dir.mkdir(parents=True, exist_ok=True)
         cover_path = book_dir / f"cover{cover_ext}"
         cover_path.write_bytes(cover_bytes)
         _safe_print(f"Da luu cover: {cover_path}")
     return cover_bytes, cover_ext
 
+
 def fetch_cover_from_book_page(book_page_url: str) -> Tuple[Optional[bytes], Optional[str], Optional[str]]:
     book_page_url = _ensure_url(book_page_url)
     soup = _fetch_html(book_page_url)
     page_url = book_page_url
-    if _is_chapter_url(book_page_url):
+    if _is_chapter_url(book_page_url, book_page_url):
         book_url = _book_url_from_chapter(soup, book_page_url)
         soup = _fetch_html(book_url, referer=_http_referer(book_page_url))
         page_url = book_url
-    info = _extract_book_info(soup, page_url)
-    cover_url = str(info.get("cover_url") or "")
-    if not cover_url:
-        book_url = _book_url_from_chapter(soup, page_url)
-        if book_url and _normalized_url(book_url) != _normalized_url(page_url):
-            soup = _fetch_html(book_url, referer=_http_referer(page_url))
-            info = _extract_book_info(soup, book_url)
-            cover_url = str(info.get("cover_url") or "")
-    content, ext = _download_cover(cover_url)
-    if content and ext:
-        content, ext = _resize_cover(content, ext)
-        return content, ext, cover_url
+    info = _get_book_info(soup, page_url)
+    cover_url = info.get("cover_url") or ""
+    cover_bytes, cover_ext = _download_cover(cover_url)
+    if cover_bytes and cover_ext:
+        cover_bytes, cover_ext = _resize_cover(cover_bytes, cover_ext)
+        return cover_bytes, cover_ext, cover_url or None
     return None, None, cover_url or None
 
 
-def _prepare_book_dir(book_info: Dict[str, object]) -> Path:
-    return OUTPUT_BASE / _safe_filename(str(book_info.get("title") or "Truyen"))
+def _prepare_book_dir(book_info: Dict[str, str]) -> Path:
+    book_dir = OUTPUT_BASE / _safe_filename(book_info.get("title") or "Truyen")
+    book_dir.mkdir(parents=True, exist_ok=True)
+    return book_dir
 
 
-def _load_book_context(url: str) -> Tuple[Dict[str, object], List[Dict[str, str]], Path, Optional[bytes], Optional[str]]:
+def _save_book_info(book_info: Dict[str, str], chapters: List[Dict[str, str]], book_dir: Path) -> None:
+    lines = [
+        f"Title: {book_info.get('title', '')}",
+        f"Author: {book_info.get('author', '')}",
+        f"Status: {book_info.get('status', '')}",
+        f"Category: {book_info.get('category', '')}",
+        f"Update time: {book_info.get('update_time', '')}",
+        f"URL: {book_info.get('url', '')}",
+        f"Cover: {book_info.get('cover_url', '')}",
+        f"Chapters: {len(chapters)}",
+        "",
+        book_info.get("intro", ""),
+        "",
+        "Muc luc:",
+    ]
+    for idx, chapter in enumerate(chapters, 1):
+        lines.append(f"{idx:04d}. {chapter['title']} - {chapter['url']}")
+    (book_dir / "book_info.txt").write_text("\n".join(lines), encoding="utf-8")
+
+
+def _load_book_context(url: str) -> Tuple[Dict[str, str], List[Dict[str, str]], Path, Optional[bytes], Optional[str]]:
     if not url:
         raise ValueError("Can nhap URL truyen hoac chuong.")
     _safe_print("Dang lay thong tin truyen...")
     data = getText(url)
-    book_dir = _prepare_book_dir(data)
+    book_info = {
+        "title": data.get("title") or "Unknown",
+        "author": data.get("author") or "Unknown",
+        "status": data.get("status", ""),
+        "category": data.get("category", ""),
+        "update_time": data.get("update_time", ""),
+        "latest_chapter": data.get("latest_chapter", ""),
+        "latest_chapter_url": data.get("latest_chapter_url", ""),
+        "intro": data.get("intro", ""),
+        "cover_url": data.get("cover_url", ""),
+        "url": data.get("url", url),
+    }
     chapters = data.get("chapters", [])
+    book_dir = _prepare_book_dir(book_info)
+    _save_book_info(book_info, chapters, book_dir)
+    epub_preview_path = book_dir / f"{_safe_filename(book_info['title'])}.epub"
 
     _safe_print("\n-----------------Thong tin truyen-----------------")
-    _safe_print(f"Ten truyen    : {data.get('title') or 'Unknown'}")
-    _safe_print(f"Tac gia       : {data.get('author') or 'Unknown'}")
-    if data.get("status"):
-        _safe_print(f"Trang thai    : {data.get('status')}")
-    if data.get("category"):
-        _safe_print(f"The loai      : {data.get('category')}")
+    _safe_print(f"Ten truyen    : {book_info['title']}")
+    _safe_print(f"Tac gia       : {book_info['author']}")
+    if book_info.get("status"):
+        _safe_print(f"Trang thai    : {book_info['status']}")
+    if book_info.get("category"):
+        _safe_print(f"The loai      : {book_info['category']}")
     _safe_print(f"So chuong     : {len(chapters)}")
-    if data.get("latest_chapter"):
-        _safe_print(f"Moi nhat      : {data.get('latest_chapter')}")
+    if book_info.get("latest_chapter"):
+        _safe_print(f"Moi nhat      : {book_info['latest_chapter']}")
     _safe_print(f"Thu muc truyen: {book_dir}")
-    _safe_print(f"EPUB se luu   : {book_dir / (_safe_filename(str(data.get('title') or 'Truyen')) + '.epub')}")
+    _safe_print(f"EPUB se luu   : {epub_preview_path}")
 
-    cover_bytes, cover_ext = _load_cover(data, book_dir)
-    return data, chapters, book_dir, cover_bytes, cover_ext
+    cover_bytes, cover_ext = _load_cover(book_info, book_dir)
+    return book_info, chapters, book_dir, cover_bytes, cover_ext
+
 
 def _ask_int(prompt: str, default: Optional[int] = None) -> int:
     while True:
@@ -834,6 +921,7 @@ def _ask_int(prompt: str, default: Optional[int] = None) -> int:
         except ValueError:
             _safe_print("Vui long nhap so hop le.")
 
+
 def _print_download_menu() -> None:
     _safe_print("\n-----------------Menu-----------------")
     _safe_print("[1] Tai tat ca (HTML + EPUB) (mac dinh)")
@@ -842,6 +930,7 @@ def _print_download_menu() -> None:
     _safe_print("[4] Tao EPUB tu cache")
     _safe_print("[5] Thoat")
 
+
 def _post_task_menu() -> bool:
     _safe_print("\n-----------------Menu-----------------")
     _safe_print("[1] Nhap URL truyen moi")
@@ -849,23 +938,25 @@ def _post_task_menu() -> bool:
     choice = input("Chon [2]: ").strip() or "2"
     return choice == "1"
 
+
 def _run_once(args: argparse.Namespace) -> None:
-    data, chapters, book_dir, cover_bytes, cover_ext = _load_book_context(args.url)
+    book_info, chapters, book_dir, cover_bytes, cover_ext = _load_book_context(args.url)
     if not chapters:
         raise RuntimeError("Khong tim thay chuong")
     start, end = _normalize_range(len(chapters), args.start, args.end)
-    download_chapters(data, chapters, book_dir, start=start, end=end, force=args.force)
+    download_chapters(book_info, chapters, book_dir, start=start, end=end, force=args.force)
     if not args.no_epub:
-        build_epub(data, chapters, book_dir, start=start, end=end, cover_bytes=cover_bytes, cover_ext=cover_ext)
+        build_epub(book_info, chapters, book_dir, start=start, end=end, cover_bytes=cover_bytes, cover_ext=cover_ext)
+
 
 def _interactive_main() -> None:
-    _safe_print("Downloader khotruyenchu.space")
+    _safe_print("Downloader 22biqu.com")
     while True:
         raw_url = input("Nhap URL (bo trong de thoat): ").strip()
         if not raw_url:
             return
         try:
-            data, chapters, book_dir, cover_bytes, cover_ext = _load_book_context(raw_url)
+            book_info, chapters, book_dir, cover_bytes, cover_ext = _load_book_context(raw_url)
             if not chapters:
                 _safe_print("Khong tim thay chuong.")
                 continue
@@ -878,25 +969,25 @@ def _interactive_main() -> None:
             choice = input("Chon [1]: ").strip() or "1"
             try:
                 if choice == "1":
-                    download_chapters(data, chapters, book_dir)
-                    build_epub(data, chapters, book_dir, cover_bytes=cover_bytes, cover_ext=cover_ext)
+                    download_chapters(book_info, chapters, book_dir)
+                    build_epub(book_info, chapters, book_dir, cover_bytes=cover_bytes, cover_ext=cover_ext)
                     break
                 if choice == "2":
                     start = _ask_int("Chuong bat dau: ")
                     end = _ask_int("Chuong ket thuc: ", len(chapters))
                     start, end = _normalize_range(len(chapters), start, end)
-                    download_chapters(data, chapters, book_dir, start=start, end=end)
+                    download_chapters(book_info, chapters, book_dir, start=start, end=end)
                     break
                 if choice == "3":
                     idx = _ask_int("Chuong can tai: ")
                     idx, _ = _normalize_range(len(chapters), idx, idx)
-                    download_chapters(data, chapters, book_dir, start=idx, end=idx)
+                    download_chapters(book_info, chapters, book_dir, start=idx, end=idx)
                     break
                 if choice == "4":
                     start = _ask_int("Chuong bat dau [1]: ", 1)
                     end = _ask_int(f"Chuong ket thuc [{len(chapters)}]: ", len(chapters))
                     start, end = _normalize_range(len(chapters), start, end)
-                    build_epub(data, chapters, book_dir, start=start, end=end, cover_bytes=cover_bytes, cover_ext=cover_ext)
+                    build_epub(book_info, chapters, book_dir, start=start, end=end, cover_bytes=cover_bytes, cover_ext=cover_ext)
                     break
                 if choice == "5":
                     return
@@ -909,7 +1000,7 @@ def _interactive_main() -> None:
 
 
 def main(argv: Optional[List[str]] = None) -> None:
-    parser = argparse.ArgumentParser(description="Download khotruyenchu.space chapters and build EPUB.")
+    parser = argparse.ArgumentParser(description="Download 22biqu.com novel chapters and build EPUB.")
     parser.add_argument("url", nargs="?", help="Book/chapter URL. Omit to open menu.")
     parser.add_argument("--start", type=int, default=1, help="Start chapter index")
     parser.add_argument("--end", type=int, default=None, help="End chapter index")
@@ -917,6 +1008,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser.add_argument("--no-epub", action="store_true", help="Only download/cache HTML")
     parser.add_argument("-y", "--yes", action="store_true", help="Run non-interactively")
     args = parser.parse_args(argv)
+
     if args.yes and not args.url:
         parser.error("-y/--yes can dung kem URL")
     if args.yes or args.url:

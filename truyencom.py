@@ -37,6 +37,13 @@ except ImportError:
 
     USE_CURL_CFFI = False
 
+try:
+    from PIL import Image
+
+    HAS_PILLOW = True
+except ImportError:
+    HAS_PILLOW = False
+
 BASE_URL = "https://truyencom.com/"
 DEFAULT_URL = "https://truyencom.com/con-duong-ba-chu.66/"
 OUTPUT_BASE = Path("output")
@@ -59,6 +66,7 @@ SLEEP_BETWEEN_PAGES = 0.25
 SLEEP_BETWEEN_CHAPS = 0.25
 CHAPTER_RETRIES = 4
 RETRY_STATUS = {403, 429, 500, 502, 503, 504}
+MAX_COVER_SIZE = (1600, 2400)
 
 
 class FetchHtmlError(RuntimeError):
@@ -139,6 +147,9 @@ def _absolute_url(page_url: str, href: str) -> str:
     base = page_url if urlparse(page_url).scheme else BASE_URL
     return urljoin(base, href)
 
+
+def _http_referer(value: str) -> str:
+    return value if urlparse(value or "").scheme in {"http", "https"} else BASE_URL
 
 def _normalized_url(url: str) -> str:
     parsed = urlparse(url)
@@ -761,20 +772,66 @@ def _download_cover(cover_url: str) -> Tuple[Optional[bytes], Optional[str]]:
     try:
         response = _http_get(cover_url)
         response.raise_for_status()
-        ext = Path(urlparse(cover_url).path).suffix.lower() or ".jpg"
-        if ext not in {".jpg", ".jpeg", ".png", ".webp"}:
+        content_type = response.headers.get("content-type", "").lower()
+        ext = Path(urlparse(cover_url).path).suffix.lower()
+        if "png" in content_type:
+            ext = ".png"
+        elif "webp" in content_type:
+            ext = ".webp"
+        elif "gif" in content_type:
+            ext = ".gif"
+        elif ext not in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
             ext = ".jpg"
         return response.content, ext
-    except Exception:
+    except Exception as exc:
+        _safe_print(f"Khong tai duoc cover: {exc}")
         return None, None
 
 
-def fetch_cover_from_book_page(book_page_url: str) -> Tuple[Optional[bytes], Optional[str], Optional[str]]:
-    soup = _fetch_html(book_page_url)
-    info = _extract_book_info(soup, _ensure_url(book_page_url))
-    cover_url = info.get("cover_url") or ""
+def _resize_cover(content: bytes, ext: str) -> Tuple[bytes, str]:
+    if not content or not HAS_PILLOW:
+        return content, ext
+    try:
+        image = Image.open(io.BytesIO(content)).convert("RGB")
+        image.thumbnail(MAX_COVER_SIZE, Image.LANCZOS)
+        output = io.BytesIO()
+        image.save(output, format="JPEG", quality=88)
+        return output.getvalue(), ".jpg"
+    except Exception as exc:
+        _safe_print(f"Khong xu ly duoc cover bang Pillow: {exc}")
+        return content, ext
+
+def _load_cover(book_info: Dict[str, str], book_dir: Path) -> Tuple[Optional[bytes], Optional[str]]:
+    cover_url = book_info.get("cover_url") or ""
     cover_bytes, cover_ext = _download_cover(cover_url)
-    return cover_bytes, cover_ext, cover_url or None
+    if cover_bytes and cover_ext:
+        cover_bytes, cover_ext = _resize_cover(cover_bytes, cover_ext)
+        cover_path = book_dir / f"cover{cover_ext}"
+        cover_path.write_bytes(cover_bytes)
+        _safe_print(f"Da luu cover: {cover_path}")
+    return cover_bytes, cover_ext
+
+def fetch_cover_from_book_page(book_page_url: str) -> Tuple[Optional[bytes], Optional[str], Optional[str]]:
+    book_page_url = _ensure_url(book_page_url)
+    soup = _fetch_html(book_page_url)
+    page_url = book_page_url
+    if "/chuong-" in urlparse(book_page_url).path:
+        book_url = _book_url_from_chapter(soup, book_page_url)
+        soup = _fetch_html(book_url, referer=_http_referer(book_page_url))
+        page_url = book_url
+    info = _extract_book_info(soup, page_url)
+    cover_url = info.get("cover_url") or ""
+    if not cover_url:
+        book_url = _book_url_from_chapter(soup, page_url)
+        if book_url and _normalized_url(book_url) != _normalized_url(page_url):
+            soup = _fetch_html(book_url, referer=_http_referer(page_url))
+            info = _extract_book_info(soup, book_url)
+            cover_url = info.get("cover_url") or ""
+    cover_bytes, cover_ext = _download_cover(cover_url)
+    if cover_bytes and cover_ext:
+        cover_bytes, cover_ext = _resize_cover(cover_bytes, cover_ext)
+        return cover_bytes, cover_ext, cover_url or None
+    return None, None, cover_url or None
 
 
 def _prepare_book_dir(book_info: Dict[str, str]) -> Path:
@@ -783,28 +840,129 @@ def _prepare_book_dir(book_info: Dict[str, str]) -> Path:
     return book_dir
 
 
-def _run_once(args: argparse.Namespace) -> None:
-    data = getText(args.url or DEFAULT_URL)
+def _load_book_context(url: str) -> Tuple[Dict[str, str], List[Dict[str, str]], Path, Optional[bytes], Optional[str]]:
+    if not url:
+        raise ValueError("Can nhap URL truyen hoac chuong.")
+    _safe_print("Dang lay thong tin truyen...")
+    data = getText(url)
     book_dir = _prepare_book_dir(data)
     chapters = data.get("chapters", [])
+
+    _safe_print("\n-----------------Thong tin truyen-----------------")
+    _safe_print(f"Ten truyen    : {data.get('title') or 'Unknown'}")
+    _safe_print(f"Tac gia       : {data.get('author') or 'Unknown'}")
+    if data.get("status"):
+        _safe_print(f"Trang thai    : {data.get('status')}")
+    if data.get("category"):
+        _safe_print(f"The loai      : {data.get('category')}")
+    _safe_print(f"So chuong     : {len(chapters)}")
+    if data.get("latest_chapter"):
+        _safe_print(f"Moi nhat      : {data.get('latest_chapter')}")
+    _safe_print(f"Thu muc truyen: {book_dir}")
+    _safe_print(f"EPUB se luu   : {book_dir / (_safe_filename(data.get('title') or 'Truyen') + '.epub')}")
+
+    cover_bytes, cover_ext = _load_cover(data, book_dir)
+    return data, chapters, book_dir, cover_bytes, cover_ext
+
+def _ask_int(prompt: str, default: Optional[int] = None) -> int:
+    while True:
+        raw = input(prompt).strip()
+        if not raw and default is not None:
+            return default
+        try:
+            return int(raw)
+        except ValueError:
+            _safe_print("Vui long nhap so hop le.")
+
+def _print_download_menu() -> None:
+    _safe_print("\n-----------------Menu-----------------")
+    _safe_print("[1] Tai tat ca (HTML + EPUB) (mac dinh)")
+    _safe_print("[2] Tai tu X toi Y (HTML)")
+    _safe_print("[3] Tai 1 chuong (HTML)")
+    _safe_print("[4] Tao EPUB tu cache")
+    _safe_print("[5] Thoat")
+
+def _post_task_menu() -> bool:
+    _safe_print("\n-----------------Menu-----------------")
+    _safe_print("[1] Nhap URL truyen moi")
+    _safe_print("[2] Thoat (mac dinh)")
+    choice = input("Chon [2]: ").strip() or "2"
+    return choice == "1"
+
+def _run_once(args: argparse.Namespace) -> None:
+    data, chapters, book_dir, cover_bytes, cover_ext = _load_book_context(args.url)
     if not chapters:
         raise RuntimeError("Khong tim thay chuong")
     start, end = _normalize_range(len(chapters), args.start, args.end)
     download_chapters(data, chapters, book_dir, start=start, end=end, force=args.force)
     if not args.no_epub:
-        build_epub(data, chapters, book_dir, start=start, end=end)
+        build_epub(data, chapters, book_dir, start=start, end=end, cover_bytes=cover_bytes, cover_ext=cover_ext)
+
+def _interactive_main() -> None:
+    _safe_print("Downloader truyencom.com")
+    while True:
+        raw_url = input("Nhap URL (bo trong de thoat): ").strip()
+        if not raw_url:
+            return
+        try:
+            data, chapters, book_dir, cover_bytes, cover_ext = _load_book_context(raw_url)
+            if not chapters:
+                _safe_print("Khong tim thay chuong.")
+                continue
+        except Exception as exc:
+            _safe_print(f"Loi: {exc}")
+            continue
+
+        while True:
+            _print_download_menu()
+            choice = input("Chon [1]: ").strip() or "1"
+            try:
+                if choice == "1":
+                    download_chapters(data, chapters, book_dir)
+                    build_epub(data, chapters, book_dir, cover_bytes=cover_bytes, cover_ext=cover_ext)
+                    break
+                if choice == "2":
+                    start = _ask_int("Chuong bat dau: ")
+                    end = _ask_int("Chuong ket thuc: ", len(chapters))
+                    start, end = _normalize_range(len(chapters), start, end)
+                    download_chapters(data, chapters, book_dir, start=start, end=end)
+                    break
+                if choice == "3":
+                    idx = _ask_int("Chuong can tai: ")
+                    idx, _ = _normalize_range(len(chapters), idx, idx)
+                    download_chapters(data, chapters, book_dir, start=idx, end=idx)
+                    break
+                if choice == "4":
+                    start = _ask_int("Chuong bat dau [1]: ", 1)
+                    end = _ask_int(f"Chuong ket thuc [{len(chapters)}]: ", len(chapters))
+                    start, end = _normalize_range(len(chapters), start, end)
+                    build_epub(data, chapters, book_dir, start=start, end=end, cover_bytes=cover_bytes, cover_ext=cover_ext)
+                    break
+                if choice == "5":
+                    return
+                _safe_print("Lua chon khong hop le.")
+            except Exception as exc:
+                _safe_print(f"Loi: {exc}")
+
+        if not _post_task_menu():
+            return
 
 
 def main(argv: Optional[List[str]] = None) -> None:
     parser = argparse.ArgumentParser(description="Download truyencom.com chapters and build EPUB.")
-    parser.add_argument("url", nargs="?", help=f"Book/chapter URL. Default: {DEFAULT_URL}")
+    parser.add_argument("url", nargs="?", help="Book/chapter URL. Omit to open menu.")
     parser.add_argument("--start", type=int, default=1, help="Start chapter index")
     parser.add_argument("--end", type=int, default=None, help="End chapter index")
     parser.add_argument("--force", action="store_true", help="Refetch even when cache exists")
     parser.add_argument("--no-epub", action="store_true", help="Only download/cache HTML")
     parser.add_argument("-y", "--yes", action="store_true", help="Run non-interactively")
     args = parser.parse_args(argv)
-    _run_once(args)
+    if args.yes and not args.url:
+        parser.error("-y/--yes can dung kem URL")
+    if args.yes or args.url:
+        _run_once(args)
+    else:
+        _interactive_main()
 
 
 if __name__ == "__main__":

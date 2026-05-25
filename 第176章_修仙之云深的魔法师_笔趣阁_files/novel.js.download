@@ -1,0 +1,513 @@
+
+function setCookie(name, value, expires, domain, path) {
+    if (expires) {
+        expires = new Date(+new Date() + expires);
+    } else {
+        expires = new Date(+new Date() + 31536000000);
+    }
+    var tempcookie = name + '=' + encodeURIComponent(value) +
+        ((expires) ? '; expires=' + expires.toGMTString() : '') +
+        ((path) ? '; path=' + path : '; path=/') +
+        ((domain) ? '; domain=' + domain : '; domain=' + document.domain);
+
+    if (tempcookie.length < 4096) {
+        document.cookie = tempcookie;
+    }
+}
+function getCookie(name) {
+    var arr, reg = new RegExp("(^| )" + name + "=([^;]*)(;|$)");
+    if (arr = document.cookie.match(reg)) {
+        return decodeURIComponent(arr[2]);
+    } else {
+        return null;
+    }
+}
+function get_cookie_value(Name) {
+    var search = Name + "=";
+    var returnvalue = "";
+    if (document.cookie.length > 0) {
+        offset = document.cookie.indexOf(search)
+        if (offset != -1) {
+            offset += search.length
+            end = document.cookie.indexOf(";", offset);
+            if (end == -1)
+                end = document.cookie.length;
+            returnvalue=unescape(document.cookie.substring(offset, end));
+        }
+    }
+    return returnvalue;
+}
+
+var jieqiUserId = 0;
+var jieqiUserName = '';
+if (document.cookie.indexOf('jieqiUserInfo') >= 0) {
+    var jieqiUserInfo = get_cookie_value('jieqiUserInfo');
+    start = 0;
+    offset = jieqiUserInfo.indexOf(',', start);
+    while (offset > 0) {
+        tmpval = jieqiUserInfo.substring(start, offset);
+        tmpidx = tmpval.indexOf('=');
+        if (tmpidx > 0) {
+            tmpname = tmpval.substring(0, tmpidx);
+            tmpval = tmpval.substring(tmpidx + 1, tmpval.length);
+            if (tmpname == 'jieqiUserId') jieqiUserId = tmpval;
+            else if (tmpname == 'jieqiUserName_un') jieqiUserName = tmpval;
+        }
+        start = offset + 1;
+        if (offset < jieqiUserInfo.length) {
+            offset = jieqiUserInfo.indexOf(',', start);
+            if (offset == -1) offset = jieqiUserInfo.length;
+        } else {
+            offset = -1;
+        }
+    }
+}
+
+function isMobile() {
+    var result = false;
+    var sUserAgent = navigator.userAgent.toLowerCase();
+    var bIsIpad = sUserAgent.match(/ipad/i) == "ipad";
+    var bIsIphoneOs = sUserAgent.match(/iphone os/i) == "iphone os";
+    var bIsMidp = sUserAgent.match(/midp/i) == "midp";
+    var bIsUc7 = sUserAgent.match(/rv:1.2.3.4/i) == "rv:1.2.3.4";
+    var bIsUc = sUserAgent.match(/ucweb/i) == "ucweb";
+    var bIsAndroid = sUserAgent.match(/android/i) == "android";
+    var bIsCE = sUserAgent.match(/windows ce/i) == "windows ce";
+    var bIsWM = sUserAgent.match(/windows mobile/i) == "windows mobile";
+    if (bIsIpad || (window.screen.height >= 768 && window.screen.width >= 1024)) {
+        result = false;
+    }
+    else if (bIsIphoneOs || bIsMidp || bIsUc7 || bIsUc || bIsAndroid || bIsCE || bIsWM) {
+        result = true;
+    }
+    else {
+        result = false;
+    }
+    return result;
+}
+
+// 内容页
+function setFont(val) {
+    $('#content').css('fontFamily', val);
+    setCookie('fontFamily', val);
+}
+function setFontColor(val) {
+    $('#content').css('color', val);
+    setCookie('fontColor', val);
+}
+function setSize(val, ele) {
+    $('#content').css('fontSize', val);
+    setCookie('fontSize', val);
+    if (ele) {
+        $(ele).addClass('active').siblings().removeClass('active');
+    }
+}
+function setBg(val) {
+    $('body').css('backgroundColor', val);
+    setCookie('bg', val);
+}
+function setNight() {
+    if ($('#readermode').attr('checked') == true) {
+        $('body').css('backgroundColor', '#111111');
+        $('.content').css('color', '#555555');
+        setCookie('night', 1);
+    } else {
+        $('body').css('backgroundColor', '');
+        $('.content').css('color', '');
+        setCookie('night', 0);
+    }
+}
+$('.select-font').change(function () {
+    var val = $(this).val()
+    setFont(val)
+});
+$('.select-color').change(function () {
+    var val = $(this).val()
+    setFontColor(val)
+});
+$('.select-size').change(function () {
+    var val = $(this).val()
+    setSize(val)
+});
+$('.select-bg').change(function () {
+    var val = $(this).val()
+    setBg(val)
+});
+// pc set night
+$('#readermode').change(function () {
+    setNight();
+})
+
+// mobile set night
+$('#bgmode-light').click(function () {
+    var hasCls = $('body').hasClass('nightmode');
+    $('#bgmode-huyan').removeClass('active');
+    if (hasCls) {
+        setCookie('night', 0);
+        $('body').removeClass('nightmode');
+        $(this).html('开灯');
+    } else {
+        setCookie('night', 1);
+        $('body').attr('class', 'nightmode');
+        $(this).html('关灯');
+    }
+});
+// 护眼模式
+$('#bgmode-huyan').click(function () {
+    var hasCls = $('body').hasClass('huyanmode');
+    if (hasCls) {
+        setCookie('night', 0);
+        $('body').removeClass('huyanmode');
+        $(this).removeClass('active');
+    } else {
+        setCookie('night', 2);
+        $('body').attr('class', 'huyanmode');
+        $(this).addClass('active');
+    }
+});
+
+// 页面加载时，载入模式
+if (isMobile()) {
+    // 手机浏览
+    var _size = getCookie('fontSize');
+    var _night = getCookie('night');
+
+    var sid = 2; // 触发文字大小按钮
+    if (_size == '24px') {
+        sid = 1;
+    } else if (_size == '16px') {
+        sid = 3;
+    }
+    $('.font-box span').eq(sid).click();
+
+    if (_night == 1) {
+        $('#bgmode-light').click();
+    } else if (_night == 2) {
+        $('#bgmode-huyan').click();
+    }
+} else {
+    // pc浏览
+    var _font = getCookie('fontFamily');
+    var _color = getCookie('fontColor');
+    var _size = getCookie('fontSize');
+    var _bg = getCookie('bg');
+    var _night = getCookie('night');
+
+    $('.select-font option').each(function () {
+        if ($(this).val() == _font) { $(this).attr('selected', 'selected'); }
+    });
+    $('.select-color option').each(function () {
+        if ($(this).val() == _color) { $(this).attr('selected', 'selected'); }
+    });
+    $('.select-size option').each(function () {
+        if ($(this).val() == _size) { $(this).attr('selected', 'selected'); }
+    });
+    $('.select-bg option').each(function () {
+        if ($(this).val() == _bg) { $(this).attr('selected', 'selected'); }
+    });
+    setFont(_font);
+    setFontColor(_color);
+    setSize(_size);
+    setBg(_bg);
+    if (_night == 1) {
+        $('#readermode').click();
+        setNight()
+    }
+}
+
+function addBookMarkByJs(chapterid, bookid, chaptername,name,author) {
+    var currentBook = {
+        BookId: bookid,
+        ChapterId: chapterid,
+        ChapterName: chaptername,
+        BookName:name,
+        Author:author
+    };
+    var bookList = getBookcase();
+    if (bookList != null && bookList != undefined) {
+        var bookcount = getBookcaseCount(bookList);
+        bookList[bookid] = currentBook;
+        saveBookcase(bookList);
+        if (bookcount > 10) {
+            removeBookFromTop(bookcount - 10);
+        }
+    }
+}
+
+
+function removeBookFromTop(num) {
+    var bookList = new Array();
+    var strBookList = getCookie("booklist");
+    if (strBookList != null && strBookList != undefined && strBookList.length > 0) {
+        var arrBookList = strBookList.split(",");
+        for (var i = num; i < arrBookList.length; i++) {
+            var bookItem = JSON.parse(unescape(arrBookList[i]));
+            bookList[bookItem.BookId] = bookItem;
+        }
+    }
+    saveBookcase(bookList);
+}
+
+function getBookcaseCount(bookList) {
+    var count = 0;
+    if (bookList != null && bookList != undefined && bookList.length > 0) {
+        for (var bookIndex in bookList) {
+            count++;
+        }
+    }
+    return count;
+}
+
+function saveBookcase(bookList) {
+    if (bookList != null && bookList != undefined && bookList.length > 0) {
+        var strCookieBookId = "";
+        var strCookieBookList = "";
+        for (var bookIndex in bookList) {
+            strCookieBookId = strCookieBookId + "," + bookIndex;
+            strCookieBookList = strCookieBookList + "," + escape(JSON.stringify(bookList[bookIndex]));
+        }
+        if (strCookieBookId.length > 0) {
+            strCookieBookId = strCookieBookId.substring(1);
+        }
+        if (strCookieBookList.length > 0) {
+            strCookieBookList = strCookieBookList.substring(1);
+        }
+        setCookie("bookid", strCookieBookId);
+        setCookie("booklist", strCookieBookList);
+    }
+}
+
+function convertBookData() {
+    var bookInfoStr = getCookie("bookinfo");
+    if (bookInfoStr != null && bookInfoStr != undefined) {
+        var cookiesBookInfo = bookInfoStr.split("§§");
+        if (cookiesBookInfo.length > 0) {
+            for (var i = 0; i < cookiesBookInfo.length; i++) {
+                var bookInfoItem = cookiesBookInfo[i].split("||");
+                if (bookInfoItem.length == 3) {
+                    addHistoryBookByManual2(bookInfoItem[1], bookInfoItem[0], bookInfoItem[2]);
+                }
+            }
+        }
+        delCookie("bookinfo");
+    }
+}
+
+function getBookcase() {
+    var bookList = new Array();
+    var strBookList = getCookie("booklist");
+    if (strBookList != null && strBookList != undefined && strBookList.length > 0) {
+        var arrBookList = strBookList.split(",");
+        for (var i = 0; i < arrBookList.length; i++) {
+            var bookItem = JSON.parse(unescape(arrBookList[i]));
+            bookList[bookItem.BookId] = bookItem;
+        }
+    }
+    return bookList;
+}
+
+var bookUserName = jieqiUserName;
+function PCLogin() {
+    if (bookUserName !='') {
+        document.write('<div class="logined">');
+        document.write('    ' + bookUserName + ' &nbsp;&nbsp;');
+        document.write('<a href="/modules/article/bookcase.php"> 我的书架 </a> |');
+        document.write('<a href="javascript:logout();"> 退出登录 </a>');
+        document.write('</div>');
+    } else {
+        document.write('<form name="mylogin" class="topbar-login" method="post">');
+        document.write('    <span>账号：</span> <input type="text" class="input-text" name="small-username" id="small-username" />');
+        document.write('    <span>密码：</span> <input type="password" class="input-text" name="small-password" id="small-password" />');
+        document.write('    <input type="button" onclick="loginbtn()" class="btn-submit" value=" " />');
+        document.write('    <a href="/register.php">用户注册</a>');
+        document.write('</form>');
+    }
+}
+
+function MLogin() {
+    if (jieqiUserId > 0) {
+        document.write(' Hi,  ' + jieqiUserName + ' &nbsp;&nbsp;');
+        document.write('<a href="/modules/article/bookcase.php"> 我的书架 </a> |');
+        document.write('<a href="javascript:logout();"> 退出登录 </a>');
+    } else {
+        document.write('<a href="/Login.php" class="btn"> 登陆 </a>');
+        document.write('<a href="/register.php" class="btn"> 注册 </a>');
+    }
+}
+function logout(){
+    $.post('/logout.php',function(){
+        window.location.reload();
+    });
+}
+function report(mail, name, cname){
+    window.location.href = `mailto:${mail}?subject=章节错误反馈：《${name}》的“${cname}”章节&body=链接地址：${window.location.href}`
+}
+function toggleDesc(ele){
+    var more = $(ele).find('.more')
+    if($(ele).hasClass('act')){
+        $(ele).removeClass('act')
+        more.html('展开<i class="r90">&#187;</i>')
+    }else{
+        $(ele).addClass('act')
+        more.html('收起<i class="r180">&#187;</i>')
+    }
+}
+function __17mb_Page(){
+    //alert();
+}
+$(function(){if($('.m-desc .xdesc').height() <= 40){$('.m-desc .more').hide()}})
+
+
+
+//内容页用户设置
+function nr_setbg(intype){
+    var huyandiv = document.getElementById("bgmode-huyan");
+    var light = document.getElementById("bgmode-light");
+    if(intype == "huyan"){
+        if(huyandiv.className == "btn-setbg"){
+            document.cookie="light=huyan;path=/";
+            set("light","huyan");
+        }
+        else{
+            document.cookie="light=no;path=/";
+            set("light","no");
+        }
+    }
+    if(intype == "light"){
+        if(light.innerHTML == "关灯"){
+            document.cookie="light=yes;path=/";
+            set("light","yes");
+        }
+        else{
+            document.cookie="light=no;path=/";
+            set("light","no");
+        }
+    }
+    if(intype == "big"){
+        document.cookie="font=big;path=/";
+        set("font","big");
+    }
+    if(intype == "middle"){
+        document.cookie="font=middle;path=/";
+        set("font","middle");
+    }
+    if(intype == "small"){
+        document.cookie="font=small;path=/";
+        set("font","small");
+    }
+}
+
+//内容页读取设置
+function getset(){
+    var strCookie=document.cookie;
+    var arrCookie=strCookie.split("; ");
+    var light;
+    var font;
+
+    for(var i=0;i<arrCookie.length;i++){
+        var arr=arrCookie[i].split("=");
+        if("light"==arr[0]){
+            light=arr[1];
+            break;
+        }
+    }
+
+    //light
+    if(light == "yes"){
+        set("light","yes");
+    }
+    else if(light == "no"){
+        set("light","no");
+    }
+    else if(light == "huyan"){
+        set("light","huyan");
+    }
+}
+
+
+//内容页读取设置
+function getset1(){
+    var strCookie=document.cookie;
+    var arrCookie=strCookie.split("; ");
+    var light;
+    var font;
+
+    for(var j=0;j<arrCookie.length;j++){
+        var arr=arrCookie[j].split("=");
+        if("font"==arr[0]){
+            font=arr[1];
+            break;
+        }
+    }
+
+    //font
+    if(font == "big"){
+        set("font","big");
+    }
+    else if(font == "middle"){
+        set("font","middle");
+    }
+    else if(font == "small"){
+        set("font","small");
+    }
+    else{
+        set("font","middle");
+    }
+}
+
+//内容页应用设置
+function set(intype,p){
+    var nr_body = document.getElementById("container");//页面body
+    var huyandiv = document.getElementById("bgmode-huyan");//护眼div
+    var lightdiv = document.getElementById("bgmode-light");//灯光div
+    var fontbig = document.getElementById("fontbig");//大字体div
+    var fontmiddle = document.getElementById("fontmiddle");//中字体div
+    var fontsmall = document.getElementById("fontsmall");//小字体div
+    var nr1 =  document.getElementById("content");//内容div
+
+
+
+    //灯光
+    if(intype == "light"){
+        if(p == "yes"){
+            //关灯
+            lightdiv.innerHTML = "开灯";
+            lightdiv.className = "btn-setbg active";
+            nr_body.className = "container nightmode";
+            huyandiv.className = "btn-setbg";
+        }
+        else if(p == "no"){
+            //开灯
+            lightdiv.innerHTML = "关灯";
+            lightdiv.className = "btn-setbg";
+            nr_body.className = "container";
+            huyandiv.className = "btn-setbg";
+        }
+        else if(p == "huyan"){
+            //护眼
+            lightdiv.innerHTML = "关灯";
+            lightdiv.className="btn-setbg";
+            huyandiv.className="btn-setbg active";
+            nr_body.className = "container huyanmode";
+        }
+    }
+    //字体
+    if(intype == "font"){
+        fontbig.className="";
+        fontmiddle.className="";
+        fontsmall.className="";
+        if(p == "big"){
+            fontbig.className="active";
+            nr1.style.fontSize="25px";
+        }
+        if(p == "middle"){
+            fontmiddle.className="active";
+            nr1.style.fontSize = "20px";
+        }
+        if(p == "small"){
+            fontsmall.className="active";
+            nr1.style.fontSize = "14px";
+        }
+    }
+}
+

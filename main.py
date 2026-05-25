@@ -23,6 +23,16 @@ if os.name == "nt":
     os.system("chcp 65001 >NUL")
 
 DOMAIN_MODULE_MAP = {
+    # 22biqu
+    "22biqu.com": "22biqu",
+    "www.22biqu.com": "22biqu",
+    "m.22biqu.com": "22biqu",
+    # 69shuba
+    "69shuba.com": "69shuba",
+    "www.69shuba.com": "69shuba",
+    # balshuzhal
+    "balshuzhal.cc": "balshuzhal",
+    "www.balshuzhal.cc": "balshuzhal",
     # truyenfull
     "truyenfull.vision": "truyenfull_vision",
     "www.truyenfull.vision": "truyenfull_vision",
@@ -44,12 +54,36 @@ DOMAIN_MODULE_MAP = {
     # biqu86
     "biqu86.com": "biqu86",
     "www.biqu86.com": "biqu86",
+    # biququ
+    "biququ.co": "biququ",
+    "www.biququ.co": "biququ",
+    # bxwx9
+    "bxwx9.org": "bxwx9",
+    "www.bxwx9.org": "bxwx9",
     # truyencom
     "truyencom.com": "truyencom",
     "www.truyencom.com": "truyencom",
+    # kanunu8
+    "kanunu8.com": "kanunu8",
+    "www.kanunu8.com": "kanunu8",
     # khotruyenchu
     "khotruyenchu.space": "khotruyenchu",
     "www.khotruyenchu.space": "khotruyenchu",
+    # metruyen
+    "metruyen.fit": "metruyen-fit",
+    "www.metruyen.fit": "metruyen-fit",
+    # piaotia
+    "piaotia.com": "piaotia",
+    "www.piaotia.com": "piaotia",
+    # uukanshu
+    "uukanshu.cc": "uukanshu",
+    "www.uukanshu.cc": "uukanshu",
+    # xqiushubang
+    "xqiushubang.com": "xqiushubang",
+    "www.xqiushubang.com": "xqiushubang",
+    # zhaoshuyuan
+    "zhaoshuyuan.net": "zhaoshuyuan",
+    "www.zhaoshuyuan.net": "zhaoshuyuan",
 }
 
 def _strip_common_prefixes(domain: str) -> str:
@@ -249,7 +283,8 @@ def main():
             cover_path = input("\nNhập đường dẫn ảnh Cover (bỏ trống để tự lấy): ").strip()
             cover_bytes, cover_ext = _read_cover_from_path(cover_path)
             if not cover_bytes:
-                cover_bytes, cover_ext = _auto_fetch_cover(module, url)
+                cover_source_url = data.get("url") or url
+                cover_bytes, cover_ext = _auto_fetch_cover(module, cover_source_url)
 
             out_dir = os.path.join("output", slugify_vi(title))
             os.makedirs(out_dir, exist_ok=True)
