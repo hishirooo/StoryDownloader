@@ -97,8 +97,6 @@ _MANUAL_VERIFY_PORT = int(os.environ.get("NOVEL543_MANUAL_PORT", "9222"))
 _MANUAL_VERIFY_TIMEOUT = int(os.environ.get("NOVEL543_MANUAL_TIMEOUT", "240"))
 _MANUAL_VERIFY_BROWSER = os.environ.get("NOVEL543_MANUAL_BROWSER", "")
 _MANUAL_VERIFY_DONE = False
-_MANUAL_VERIFY_CLOSE_BROWSER = os.environ.get("NOVEL543_MANUAL_KEEP_OPEN", "0") != "1"
-_MANUAL_BROWSER_PROCESS: Optional[subprocess.Popen] = None
 
 AUTHOR_LABEL = "\u4f5c\u8005"
 CATEGORY_LABELS = ("\u5206\u985e", "\u5206\u7c7b")
@@ -288,9 +286,8 @@ def _configure_manual_verify(
     port: Optional[int] = None,
     timeout: Optional[int] = None,
     browser_path: str = "",
-    keep_open: bool = False,
 ) -> None:
-    global _MANUAL_VERIFY_ENABLED, _MANUAL_VERIFY_PROFILE, _MANUAL_VERIFY_PORT, _MANUAL_VERIFY_TIMEOUT, _MANUAL_VERIFY_BROWSER, _MANUAL_VERIFY_CLOSE_BROWSER
+    global _MANUAL_VERIFY_ENABLED, _MANUAL_VERIFY_PROFILE, _MANUAL_VERIFY_PORT, _MANUAL_VERIFY_TIMEOUT, _MANUAL_VERIFY_BROWSER
     _MANUAL_VERIFY_ENABLED = bool(enabled)
     if profile_dir:
         _MANUAL_VERIFY_PROFILE = Path(profile_dir)
@@ -300,7 +297,6 @@ def _configure_manual_verify(
         _MANUAL_VERIFY_TIMEOUT = int(timeout)
     if browser_path:
         _MANUAL_VERIFY_BROWSER = browser_path
-    _MANUAL_VERIFY_CLOSE_BROWSER = not keep_open
 
 def _cookies_for_browser_context() -> List[Dict[str, object]]:
     cookie_header = _cookie_header()
@@ -350,8 +346,7 @@ def _wait_for_cdp(port: int, timeout: int = 20) -> bool:
         time.sleep(0.5)
     return False
 
-def _launch_real_browser_for_verify(url: str, port: int, profile_dir: Path) -> subprocess.Popen:
-    global _MANUAL_BROWSER_PROCESS
+def _launch_real_browser_for_verify(url: str, port: int, profile_dir: Path) -> None:
     executable_path = _browser_executable_path()
     if not executable_path:
         raise RuntimeError("Khong tim thay Chrome/Edge that de mo manual verify")
@@ -366,28 +361,7 @@ def _launch_real_browser_for_verify(url: str, port: int, profile_dir: Path) -> s
         "--disable-extensions",
         url,
     ]
-    _MANUAL_BROWSER_PROCESS = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return _MANUAL_BROWSER_PROCESS
-
-def _close_manual_browser(browser=None, launched_by_us: bool = False) -> None:
-    global _MANUAL_BROWSER_PROCESS
-    if not (_MANUAL_VERIFY_CLOSE_BROWSER and launched_by_us):
-        return
-    try:
-        if browser is not None:
-            browser.close()
-            _safe_print("Da dong Chrome/Edge manual verify.")
-            return
-    except Exception:
-        pass
-    process = _MANUAL_BROWSER_PROCESS
-    if process is not None:
-        try:
-            process.terminate()
-            _safe_print("Da dong tien trinh Chrome/Edge manual verify.")
-        except Exception:
-            pass
-        _MANUAL_BROWSER_PROCESS = None
+    subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 def _html_is_usable_novel_page(markup: str) -> bool:
     if not markup or _looks_like_challenge_html(markup):
@@ -421,12 +395,9 @@ def _manual_verify_with_real_browser(url: str) -> bool:
     url = _ensure_url(url)
     port = _MANUAL_VERIFY_PORT
     profile_dir = _MANUAL_VERIFY_PROFILE
-    launched_by_us = False
-    verified = False
     if not _port_is_open(port):
         _safe_print(f"Mo Chrome/Edge that de xac minh Novel543 (port {port})...")
         _launch_real_browser_for_verify(url, port, profile_dir)
-        launched_by_us = True
         if not _wait_for_cdp(port, timeout=25):
             raise RuntimeError("Khong ket noi duoc DevTools cua Chrome/Edge manual verify")
     else:
@@ -476,9 +447,7 @@ def _manual_verify_with_real_browser(url: str) -> bool:
                         except OSError:
                             pass
                     _MANUAL_VERIFY_DONE = True
-                    verified = True
                     _safe_print("Da nhan dien trang hop le sau xac minh, tiep tuc tai...")
-                    _close_manual_browser(browser, launched_by_us=launched_by_us)
                     return True
             except Exception:
                 pass
@@ -489,15 +458,10 @@ def _manual_verify_with_real_browser(url: str) -> bool:
             pw.stop()
         except Exception:
             pass
-        if not verified:
-            _close_manual_browser(None, launched_by_us=launched_by_us)
 
-def _manual_verify_if_enabled(url: str, *, force: bool = False) -> bool:
-    global _MANUAL_VERIFY_DONE
+def _manual_verify_if_enabled(url: str) -> bool:
     if not _MANUAL_VERIFY_ENABLED:
         return False
-    if force:
-        _MANUAL_VERIFY_DONE = False
     if _MANUAL_VERIFY_DONE and _cookie_header():
         return True
     return _manual_verify_with_real_browser(url)
@@ -505,7 +469,6 @@ def _manual_verify_if_enabled(url: str, *, force: bool = False) -> bool:
 
 def _close_browser_context() -> None:
     global _PW, _BROWSER_CONTEXT
-    _close_manual_browser(None, launched_by_us=True)
     try:
         if _BROWSER_CONTEXT is not None:
             _BROWSER_CONTEXT.close()
@@ -746,7 +709,7 @@ def _fetch_html_with_status(
             soup = _response_soup(response)
 
             if status_code == 403 or _looks_like_challenge_soup(soup):
-                if _manual_verify_if_enabled(url, force=True):
+                if _manual_verify_if_enabled(url):
                     response = _http_get(url, referer=referer)
                     status_code = getattr(response, "status_code", 200)
                     last_status = status_code
@@ -1909,19 +1872,7 @@ def _interactive_main() -> None:
 
 
 def main(argv: Optional[List[str]] = None) -> None:
-    examples = """examples:
-  python novel543.py
-  python novel543.py https://www.novel543.com/0327692090/ -y
-  python novel543.py https://www.novel543.com/0327692090/ --manual-verify --manual-timeout 300 -y
-  python novel543.py https://www.novel543.com/0327692090/ --start 17 --end 17 --no-epub -y
-  python novel543.py https://www.novel543.com/0327692090/ --cookie-file novel543_cookie.txt -y
-  python novel543.py https://www.novel543.com/0327692090/ --manual-verify --manual-keep-open -y
-"""
-    parser = argparse.ArgumentParser(
-        description="Download novel543.com novel chapters and build EPUB.",
-        epilog=examples,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
+    parser = argparse.ArgumentParser(description="Download novel543.com novel chapters and build EPUB.")
     parser.add_argument("url", nargs="?", help=f"Book/catalog/chapter URL. Default: {DEFAULT_URL}")
     parser.add_argument("--start", type=int, default=1, help="Start chapter index")
     parser.add_argument("--end", type=int, default=None, help="End chapter index")
@@ -1938,24 +1889,18 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser.add_argument("--manual-port", type=int, default=None, help="DevTools port for manual verification browser")
     parser.add_argument("--manual-timeout", type=int, default=None, help="Seconds to wait for manual verification")
     parser.add_argument("--manual-browser", default="", help="Path to real Chrome/Edge used for manual verification")
-    parser.add_argument("--manual-keep-open", action="store_true", help="Keep the manual verification browser open after cookies are captured")
     parser.add_argument("-y", "--yes", action="store_true", help="Run non-interactively")
     args = parser.parse_args(argv)
-    interactive_mode = not args.yes and not args.url
     _configure_user_agent(args.user_agent)
     _configure_cookie(args.cookie, args.cookie_file or None)
     _configure_cloak_browser(args.cloak, args.cloak_profile, args.cloak_disable_http2)
     _configure_manual_verify(
-        args.manual_verify or interactive_mode,
+        args.manual_verify,
         args.manual_profile,
         args.manual_port,
         args.manual_timeout,
         args.manual_browser,
-        args.manual_keep_open,
     )
-
-    if not args.manual_verify and interactive_mode:
-        _safe_print("Manual verify se tu bat khi Novel543 yeu cau xac minh.")
 
     if args.yes or args.url:
         _run_once(args)
@@ -1965,3 +1910,17 @@ def main(argv: Optional[List[str]] = None) -> None:
 
 if __name__ == "__main__":
     main()
+
+
+'''
+    Cách 1 : 
+    python novel543.py https://www.novel543.com/0327692090/ --manual-verify --manual-profile .\playwright_profile\novel543_real_browser --manual-timeout 300 -y
+    
+    Cách 2 : 
+    python novel543.py https://www.novel543.com/0327692090/ --manual-verify --manual-port 9333 --manual-profile .\playwright_profile\novel543_real_browser -y
+    
+    Cách 3 :
+    
+    python novel543.py https://www.novel543.com/0327692090/ --manual-verify --manual-browser "C:\Program Files\Google\Chrome\Application\chrome.exe" -y
+    
+'''
