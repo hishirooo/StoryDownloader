@@ -81,6 +81,9 @@ DOMAIN_MODULE_MAP = {
     # xqiushubang
     "xqiushubang.com": "xqiushubang",
     "www.xqiushubang.com": "xqiushubang",
+    # novel543
+    "novel543.com": "novel543",
+    "www.novel543.com": "novel543",
     # zhaoshuyuan
     "zhaoshuyuan.net": "zhaoshuyuan",
     "www.zhaoshuyuan.net": "zhaoshuyuan",
