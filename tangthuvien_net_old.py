@@ -753,3 +753,9 @@ ol{{padding-left:1.25rem}}
 
 def fetch_chapter_content(url: str) -> dict:
     return get_chapter(url)
+
+try:
+    from download_policy import install_adapter_policy as _install_adapter_policy
+    _install_adapter_policy(globals())
+except Exception:
+    pass

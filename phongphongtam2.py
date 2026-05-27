@@ -407,6 +407,12 @@ def create_epub_advanced(info: dict, chapters: list):
         print(f"\n❌ Lỗi khi đóng gói EPUB: {e}")
 
     return out_file
+
+try:
+    from download_policy import install_adapter_policy as _install_adapter_policy
+    _install_adapter_policy(globals())
+except Exception:
+    pass
 if __name__ == "__main__":
     UrlStory= "https://phongphongtam2.com/manga/tinh-yeu-den-muon-diep-kien-tinh/"
     info = _get_book_info(_fetch_html(UrlStory))

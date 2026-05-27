@@ -627,20 +627,40 @@ def main():
         print("[ERROR] Không tìm được danh sách chapter.")
         sys.exit(1)
 
+    import download_policy
+
+    chapter_by_url = {chapter.url: chapter for chapter in chapters}
+
+    def fetch_one(url: str, retries: int = 1, fallback_title: str = "", book_title: str = "") -> Dict[str, str]:
+        chapter = chapter_by_url[url]
+        ch_title, ch_html = downloader.fetch_chapter_content(chapter)
+        return {
+            "title": ch_title or fallback_title,
+            "content_html": ch_html,
+            "text": BeautifulSoup(ch_html or "", "html.parser").get_text("\n", strip=True),
+            "url": url,
+            "status_code": 200,
+        }
+
+    policy_chapters = [{"title": chapter.title, "url": chapter.url} for chapter in chapters]
+    policy_result = download_policy.download_chapters_with_retries(
+        module=downloader,
+        book_title=meta.title,
+        chapters=policy_chapters,
+        out_dir=out_dir / safe_filename(meta.title),
+        fetch_fn=fetch_one,
+        start=1,
+        end=None,
+        book_url=args.url,
+    )
+
     chapters_data: List[Tuple[Chapter, str, str]] = []
-    failed = []
+    for data_item in policy_result["chapters_data"]:
+        chapter = chapter_by_url.get(data_item.get("url"))
+        if chapter:
+            chapters_data.append((chapter, data_item.get("title") or chapter.title, data_item.get("content_html") or ""))
 
-    for i, chapter in enumerate(chapters, start=1):
-        label = f"{chapter.number}" if chapter.number is not None else "?"
-        print(f"[{i}/{len(chapters)}] Tải chương {label}: {chapter.url}")
-
-        try:
-            ch_title, ch_html = downloader.fetch_chapter_content(chapter)
-            chapters_data.append((chapter, ch_title, ch_html))
-        except Exception as e:
-            print(f"   -> FAIL: {e}")
-            failed.append((chapter, str(e)))
-
+    failed = policy_result["failures"]
     if not chapters_data:
         print("[ERROR] Không tải được chapter nào.")
         sys.exit(1)
@@ -655,9 +675,15 @@ def main():
 
     if failed:
         print("\nDanh sách chương lỗi:")
-        for ch, err in failed[:20]:
-            print(f" - {ch.url} -> {err}")
+        for item in failed[:20]:
+            print(f" - {item.get('url')} -> {item.get('status_code')} {item.get('error')}")
 
 
+
+try:
+    from download_policy import install_adapter_policy as _install_adapter_policy
+    _install_adapter_policy(globals())
+except Exception:
+    pass
 if __name__ == "__main__":
     main()

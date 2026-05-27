@@ -241,8 +241,17 @@ def _normalize_range(total: int, start: int = 1, end=None):
     return start, end
 
 
+def _resolve_fetch_fn(module):
+    for name in ("fetch_chapter_content", "get_chapter", "fetch_chapter", "extract_chapter_content"):
+        fn = getattr(module, name, None)
+        if callable(fn):
+            return fn
+    return None
+
+
 def main():
     import epub_builder
+    import download_policy
     while True:
         try:
             url = input("Nhập Url : ").strip()
@@ -292,7 +301,7 @@ def main():
             out_dir = os.path.join("output", slugify_vi(title))
             os.makedirs(out_dir, exist_ok=True)
 
-            fetch_fn = getattr(module, "fetch_chapter_content", None) or getattr(module, "get_chapter", None)
+            fetch_fn = _resolve_fetch_fn(module)
             if fetch_fn is None:
                 raise AttributeError(f"Module '{module_name}' thiếu hàm fetch_chapter_content/get_chapter")
 
@@ -301,16 +310,36 @@ def main():
                 choice = input("Chọn [1]: ").strip() or "1"
 
                 if choice == "1":
-                    if hasattr(module, "save_all_chapters_to_html"):
+                    if module_name == "novel543" and hasattr(module, "save_all_chapters_to_html"):
                         module.save_all_chapters_to_html(title, chapters, out_dir, start=1, end=None)
+                        epub_chapters = chapters
+                        epub_chapters_data = None
+                        epub_fetch_fn = fetch_fn
+                        epub_cache_dir = out_dir
+                    else:
+                        download_result = download_policy.download_chapters_with_retries(
+                            module=module,
+                            book_title=title,
+                            chapters=chapters,
+                            out_dir=out_dir,
+                            fetch_fn=fetch_fn,
+                            start=1,
+                            end=None,
+                            book_url=data.get("url") or url,
+                        )
+                        epub_chapters = download_result["chapters"]
+                        epub_chapters_data = download_result["chapters_data"]
+                        epub_fetch_fn = None
+                        epub_cache_dir = None
                     epub_path = os.path.join(out_dir, f"{slugify_vi(title)}.epub")
                     epub_builder.create_epub(
                         book_url=url,
                         book_title=title,
                         author=author,
-                        chapters=chapters,
-                        fetch_fn=fetch_fn,
-                        html_cache_dir=out_dir,
+                        chapters=epub_chapters,
+                        fetch_fn=epub_fetch_fn,
+                        html_cache_dir=epub_cache_dir,
+                        chapters_data=epub_chapters_data,
                         cover_bytes=cover_bytes,
                         cover_ext=cover_ext,
                         out_epub_path=epub_path,
@@ -323,14 +352,36 @@ def main():
                     start = _ask_int("Chương bắt đầu: ")
                     end = _ask_int("Chương kết thúc: ", len(chapters))
                     start, end = _normalize_range(len(chapters), start, end)
-                    if hasattr(module, "save_all_chapters_to_html"):
+                    if module_name == "novel543" and hasattr(module, "save_all_chapters_to_html"):
                         module.save_all_chapters_to_html(title, chapters, out_dir, start=start, end=end)
+                    else:
+                        download_policy.download_chapters_with_retries(
+                            module=module,
+                            book_title=title,
+                            chapters=chapters,
+                            out_dir=out_dir,
+                            fetch_fn=fetch_fn,
+                            start=start,
+                            end=end,
+                            book_url=data.get("url") or url,
+                        )
                     break
                 if choice == "3":
                     idx = _ask_int("Chương cần tải: ")
                     idx, _ = _normalize_range(len(chapters), idx, idx)
-                    if hasattr(module, "save_all_chapters_to_html"):
+                    if module_name == "novel543" and hasattr(module, "save_all_chapters_to_html"):
                         module.save_all_chapters_to_html(title, chapters, out_dir, start=idx, end=idx)
+                    else:
+                        download_policy.download_chapters_with_retries(
+                            module=module,
+                            book_title=title,
+                            chapters=chapters,
+                            out_dir=out_dir,
+                            fetch_fn=fetch_fn,
+                            start=idx,
+                            end=idx,
+                            book_url=data.get("url") or url,
+                        )
                     break
                 if choice == "4":
                     return

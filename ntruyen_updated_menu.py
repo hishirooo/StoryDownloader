@@ -31,6 +31,7 @@ import re
 import json
 from epub_metadata import subject_xml
 import os
+import sys
 import unicodedata
 import zipfile
 import html as _html
@@ -739,41 +740,47 @@ def download_and_build_epub_ntruyen(
     xhtml_dir = os.path.join(book_folder, "xhtml")
     _ensure_dir(xhtml_dir)
 
-    items = []
-    total_chapters = len(chapters)
+    import download_policy
+
+    policy_chapters = []
     for idx, chap in enumerate(chapters, 1):
         chap_id = int(chap["id"])
         chap_slug = str(chap.get("slug") or "").strip()
         chap_title = str(chap.get("name") or f"Chương {idx}").strip()
+        policy_chapters.append({
+            "title": chap_title,
+            "url": make_chapter_url(doc_base_url, chap_slug, chap_id),
+        })
 
-        chapter_url = make_chapter_url(doc_base_url, chap_slug, chap_id)
-        content_html = ""
-        last_err = None
-        for attempt in range(1, 4):
-            try:
-                content_html, _text = fetch_chapter_content(session, chapter_url, referer=doc_base_url)
-                if content_html:
-                    break
-            except Exception as e:
-                last_err = e
-                print(f"  -> ❌ Lỗi tải chương (attempt {attempt}/3): {e}")
-                time.sleep(1.0 * attempt)
+    def fetch_one(chapter_url: str, retries: int = 1, fallback_title: str = "", book_title: str = "") -> Dict:
+        content_html, text_content = fetch_chapter_content(session, chapter_url, referer=doc_base_url)
+        return {
+            "title": fallback_title or "Chương",
+            "content_html": content_html,
+            "text": text_content,
+            "url": chapter_url,
+            "status_code": 200,
+        }
 
-        if not content_html:
-            print(chapter_log_line(idx, total_chapters, "ERR", idx, total_chapters, f"{chap_title} ({last_err})"))
-            continue
+    policy_result = download_policy.download_chapters_with_retries(
+        module=sys.modules[__name__],
+        book_title=title,
+        chapters=policy_chapters,
+        out_dir=xhtml_dir,
+        fetch_fn=fetch_one,
+        start=1,
+        end=None,
+        book_url=doc_base_url,
+    )
 
-        xhtml = make_chapter_xhtml(chap_title, content_html)
+    items = []
+    for idx, data in enumerate(policy_result["chapters_data"], 1):
+        chap_title = data.get("title") or f"Chương {idx}"
+        xhtml = make_chapter_xhtml(chap_title, data.get("content_html") or "")
         items.append({"title": chap_title, "xhtml_content": xhtml})
-
-        # save debug xhtml
         fn = os.path.join(xhtml_dir, f"chap{idx:04d}.xhtml")
         with open(fn, "w", encoding="utf-8") as f:
             f.write(xhtml)
-
-        print(chapter_log_line(idx, total_chapters, 200, idx, total_chapters, chap_title))
-        time.sleep(sleep_between_chaps)
-
     if not items:
         raise RuntimeError("Không tải được chương nào để tạo EPUB.")
 
@@ -897,6 +904,12 @@ def main_cli(argv=None):
         sort=args.sort,
     )
 
+
+try:
+    from download_policy import install_adapter_policy as _install_adapter_policy
+    _install_adapter_policy(globals())
+except Exception:
+    pass
 if __name__ == "__main__":
     import sys
     # Nếu có tham số URL -> chạy CLI; nếu không -> menu.

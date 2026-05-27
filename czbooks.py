@@ -290,37 +290,33 @@ class CzbooksScraper:
         return {'title': title, 'content_html': content_html, 'url': chapter_url}
 
     def download_all_chapters(self, chapters):
-        total = len(chapters)
-        cached = 0
-        downloaded = 0
-        failed = 0
+        import download_policy
 
-        _print(f'\n🚀 Bắt đầu tải {total} chương...')
-        _print(f'{"-"*50}')
+        def fetch_one(url, retries=1, fallback_title='', book_title=''):
+            data = self.get_content_chapter(url, fallback_title)
+            if not data:
+                return {
+                    'title': fallback_title or 'Chapter error',
+                    'content_html': '',
+                    'text': '',
+                    'url': url,
+                    'status_code': 'ERR',
+                    'ok': False,
+                    'error': 'No chapter content',
+                }
+            data.setdefault('status_code', 200)
+            return data
 
-        for index, chapter in enumerate(chapters, start=1):
-            filename = f'{index:04d}.html'
-            path = os.path.join(self.book_dir, filename)
-            if os.path.exists(path):
-                cached += 1
-                continue
-            try:
-                chapter_data = self.get_content_chapter(chapter['url'], chapter['title'])
-                if not chapter_data or not chapter_data.get('content_html'):
-                    _print(f'  [{index:04d}/{total}] ⚠ Trống: {chapter["title"]}')
-                    failed += 1
-                    time.sleep(1.0)
-                    continue
-                self.save_chapter_file(index, chapter_data['title'], chapter_data['content_html'])
-                downloaded += 1
-                _print(f'  [{index:04d}/{total}] ✓ {chapter_data["title"]}')
-            except Exception as exc:
-                failed += 1
-                _print(f'  [{index:04d}/{total}] ✗ Lỗi: {exc}')
-            time.sleep(1.0)
-
-        _print(f'{"-"*50}')
-        _print(f'📊 Kết quả: {downloaded} tải mới | {cached} từ cache | {failed} lỗi')
+        self._policy_last_download_result = download_policy.download_chapters_with_retries(
+            module=self,
+            book_title=self.novel_data.get('title') or 'Book',
+            chapters=chapters,
+            out_dir=self.book_dir,
+            fetch_fn=fetch_one,
+            start=1,
+            end=None,
+            book_url=self.novel_url,
+        )
 
     def _fetch_chapter_for_epub(self, chapter_url):
         """Wrapper cho get_content_chapter để dùng làm fetch_fn cho epub_builder."""
@@ -330,18 +326,21 @@ class CzbooksScraper:
         epub_title = self.novel_data['title']
         epub_author = self.novel_data['author']
         epub_path = os.path.join(self.output_base, f'{self._safe_filename(epub_title)}.epub')
+        policy_result = getattr(self, '_policy_last_download_result', None)
+        has_policy_result = isinstance(policy_result, dict)
 
         create_epub(
             book_url=self.novel_url,
             book_title=epub_title,
             author=epub_author,
-            chapters=chapters,
-            fetch_fn=self._fetch_chapter_for_epub,
+            chapters=policy_result.get('chapters') if has_policy_result else chapters,
+            fetch_fn=None if has_policy_result else self._fetch_chapter_for_epub,
             cover_bytes=self.novel_data.get('cover_bytes'),
             cover_ext=self.novel_data.get('cover_ext', '.jpg'),
             language='zh',
             out_epub_path=epub_path,
-            html_cache_dir=self.book_dir,
+            html_cache_dir=None if has_policy_result else self.book_dir,
+            chapters_data=policy_result.get('chapters_data') if has_policy_result else None,
             tags=self.novel_data,
             book_info=self.novel_data,
         )
@@ -372,6 +371,12 @@ def main():
         _print(f'\n❌ Đã xảy ra lỗi: {exc}')
 
 
+
+try:
+    from download_policy import install_adapter_policy as _install_adapter_policy
+    _install_adapter_policy(globals())
+except Exception:
+    pass
 if __name__ == '__main__':
     main()
         

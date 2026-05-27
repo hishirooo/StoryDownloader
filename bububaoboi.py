@@ -481,5 +481,11 @@ def main():
     print(f"✅ EPUB: {epub_path}")
     print(f"📁 Thư mục chương: {out_dir}")
 
+
+try:
+    from download_policy import install_adapter_policy as _install_adapter_policy
+    _install_adapter_policy(globals())
+except Exception:
+    pass
 if __name__ == "__main__":
     main()

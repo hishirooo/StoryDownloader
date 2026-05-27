@@ -1056,5 +1056,11 @@ def main():
     if saved_txts:
         print(f"✅ Đã lưu TXT tại: {out_dir}")
 
+
+try:
+    from download_policy import install_adapter_policy as _install_adapter_policy
+    _install_adapter_policy(globals())
+except Exception:
+    pass
 if __name__ == "__main__":
     main()

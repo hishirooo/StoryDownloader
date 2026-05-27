@@ -860,6 +860,12 @@ def download_and_build_epub(url_story: str, pass_unlock_chapter: Optional[str] =
 
 #-----------------------CHẠY CHƯƠNG TRÌNH-----------------------#
 
+
+try:
+    from download_policy import install_adapter_policy as _install_adapter_policy
+    _install_adapter_policy(globals())
+except Exception:
+    pass
 if __name__ == "__main__":
     # Cấu hình của bạn
     UrlStory= "https://giatochotran.wordpress.com/2021/12/16/muc-luc-chao-mung-den-voi-phong-phat-song-bong-de/"

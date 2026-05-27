@@ -317,6 +317,12 @@ def _get_content_from_chapter_url(chapter_url: str, timeout: int = 3) -> str:
 
 # --------------------------- Demo ---------------------------
 
+
+try:
+    from download_policy import install_adapter_policy as _install_adapter_policy
+    _install_adapter_policy(globals())
+except Exception:
+    pass
 if __name__ == "__main__":
     # Ví dụ:
     # book_url = "https://ntruyen.biz/truyen/canh-cua-trong-khe-nut-matthia"
