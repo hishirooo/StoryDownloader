@@ -893,6 +893,7 @@ def main_cli(argv=None):
     ap.add_argument("--out", default=OUTPUT_ROOT, help="Thư mục output")
     ap.add_argument("--limit", type=int, default=API_LIMIT, help="Số chương mỗi page API (default 50)")
     ap.add_argument("--sort", default=API_SORT, choices=["asc", "desc"], help="Sort chapters")
+    ap.add_argument("-y", "--yes", action="store_true", help="Run non-interactively")
     args = ap.parse_args(argv)
 
     download_and_build_epub_ntruyen(

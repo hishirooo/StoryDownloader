@@ -358,8 +358,20 @@ class CzbooksScraper:
         self.build_epub(chapters)
 
 
-def main():
-    url = input('Nhập URL truyện CZBooks: ').strip()
+def main(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv:
+        import argparse
+        parser = argparse.ArgumentParser(description='Download czbooks.net novel')
+        parser.add_argument('url', help='Book URL')
+        parser.add_argument('-y', '--yes', action='store_true', help='Run non-interactively')
+        args = parser.parse_args(argv)
+        url = args.url.strip()
+    else:
+        url = ""
+    if not url:
+        url = input('Nhập URL truyện CZBooks: ').strip()
     if not url:
         print('URL không được để trống.')
         return

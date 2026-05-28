@@ -29,6 +29,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
+
+if os.name == "nt":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 try:
     import bs4
     import cloudscraper
@@ -584,6 +592,7 @@ def main():
     parser.add_argument("--end", type=int, default=None, help="Chương kết thúc")
     parser.add_argument("--delay", type=float, default=0.8, help="Delay giữa các request")
     parser.add_argument("--out", default="output_mottruyen", help="Thư mục output")
+    parser.add_argument("-y", "--yes", action="store_true", help="Run non-interactively")
     args = parser.parse_args()
 
     out_dir = Path(args.out)

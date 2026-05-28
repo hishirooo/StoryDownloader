@@ -60,6 +60,9 @@ DOMAIN_MODULE_MAP = {
     # bxwx9
     "bxwx9.org": "bxwx9",
     "www.bxwx9.org": "bxwx9",
+    # bqxs
+    "bqxs.net": "bqxs",
+    "www.bqxs.net": "bqxs",
     # truyencom
     "truyencom.com": "truyencom",
     "www.truyencom.com": "truyencom",

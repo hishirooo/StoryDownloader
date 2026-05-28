@@ -1166,4 +1166,6 @@ try:
 except Exception:
     pass
 if __name__ == "__main__":
-    main()
+    import sys as _sys
+    from adapter_cli import dispatch_or_menu as _dispatch_or_menu
+    _dispatch_or_menu(_sys.modules[__name__], main, default_url=globals().get("DEFAULT_URL", ""))

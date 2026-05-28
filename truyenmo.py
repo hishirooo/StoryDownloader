@@ -849,6 +849,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start", type=int, help="Chương bắt đầu, mặc định 1")
     parser.add_argument("--end", type=int, help="Chương kết thúc, mặc định là chương cuối")
     parser.add_argument("--clean-dir", help="Dọn rác quảng cáo trong thư mục HTML đã tải sẵn")
+    parser.add_argument("-y", "--yes", action="store_true", help="Run non-interactively")
     return parser.parse_args()
 
 
@@ -858,6 +859,8 @@ def prompt_if_needed(args: argparse.Namespace) -> argparse.Namespace:
     if not args.source:
         raise SystemExit("Thiếu URL hoặc file HTML info.")
 
+    if not args.mode and getattr(args, "yes", False):
+        args.mode = "4"
     if not args.mode:
         safe_print("\n-----------------Menu-----------------")
         safe_print("[1] Tải và lưu HTML")
@@ -1070,6 +1073,7 @@ def _should_use_interactive_menu(args: argparse.Namespace) -> bool:
         and args.start is None
         and args.end is None
         and not args.clean_dir
+        and not getattr(args, "yes", False)
     )
 
 def main() -> None:

@@ -258,6 +258,11 @@ try:
 except Exception:
     pass
 if __name__ == "__main__":
+    import sys as _sys
+    if len(_sys.argv) > 1:
+        from adapter_cli import run_adapter_cli as _run_adapter_cli
+        _run_adapter_cli(_sys.modules[__name__], default_url=globals().get("DEFAULT_URL", ""))
+        raise SystemExit
     while True:
         try:
             # Xóa sạch màn hình console trước khi bắt đầu tải truyện mới

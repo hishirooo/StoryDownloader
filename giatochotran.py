@@ -867,6 +867,11 @@ try:
 except Exception:
     pass
 if __name__ == "__main__":
+    import sys as _sys
+    if len(_sys.argv) > 1:
+        from adapter_cli import run_adapter_cli as _run_adapter_cli
+        _run_adapter_cli(_sys.modules[__name__], default_url=globals().get("DEFAULT_URL", ""))
+        raise SystemExit
     # Cấu hình của bạn
     UrlStory= "https://giatochotran.wordpress.com/2021/12/16/muc-luc-chao-mung-den-voi-phong-phat-song-bong-de/"
     # Thay 'adudu' bằng mật khẩu chính xác nếu cần (nếu không cần thì để None)
