@@ -47,6 +47,7 @@ mimetype
 .DS_Store
 Thumbs.db
 playwright_profile/
+medoctruyen_cookie.json
 # Backup files
 *_backup.py
 *_backup.ui

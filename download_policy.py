@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import time
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -40,6 +41,11 @@ FAILED_TEXT_MARKERS = (
     "chuong loi",
     "chương lỗi",
     "err_content",
+    "err_login",
+    "err_rate_limit",
+    "ban doc qua nhanh",
+    "doc qua nhanh",
+    "vui long cho trong giay lat",
     "(err)",
 )
 
@@ -54,6 +60,12 @@ def _safe_print(message: str = "") -> None:
 
 def _clean_spaces(value: str) -> str:
     return re.sub(r"\s+", " ", html.unescape(value or "")).strip()
+
+
+def _ascii_fold(value: str) -> str:
+    value = str(value or "").replace("đ", "d").replace("Đ", "D")
+    value = unicodedata.normalize("NFKD", value)
+    return value.encode("ascii", "ignore").decode("ascii", errors="ignore").lower()
 
 
 def _status_to_int(status: Any) -> Optional[int]:
@@ -115,7 +127,8 @@ def _looks_like_failed_content(text: str) -> bool:
     cleaned = _clean_spaces(text).lower()
     if not cleaned:
         return True
-    return any(marker in cleaned for marker in FAILED_TEXT_MARKERS)
+    folded = _ascii_fold(cleaned)
+    return any(marker in cleaned or marker in folded for marker in FAILED_TEXT_MARKERS)
 
 
 def _content_html_from_text(text: str) -> str:

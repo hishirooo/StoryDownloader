@@ -26,7 +26,8 @@ DOMAIN_MODULE_MAP = {
     # 22biqu
     "22biqu.com": "22biqu",
     "www.22biqu.com": "22biqu",
-    "m.22biqu.com": "22biqu",
+    "m.22biqu.com": "m_22biqu",
+    "m.22biqu.net": "m_22biqu",
     # 69shuba
     "69shuba.com": "69shuba",
     "www.69shuba.com": "69shuba",
@@ -63,6 +64,13 @@ DOMAIN_MODULE_MAP = {
     # bqxs
     "bqxs.net": "bqxs",
     "www.bqxs.net": "bqxs",
+    # bqglll
+    "bqglll.cc": "bqglll",
+    "www.bqglll.cc": "bqglll",
+    "m.bqglll.cc": "bqglll",
+    # medoctruyen
+    "medoctruyen.vn": "medoctruyen",
+    "www.medoctruyen.vn": "medoctruyen",
     # truyencom
     "truyencom.com": "truyencom",
     "www.truyencom.com": "truyencom",
