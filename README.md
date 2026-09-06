@@ -26,6 +26,12 @@ python main.py
 
 Hoặc sử dụng `truyenfull_vision.py` nếu bạn muốn tùy chỉnh thêm.
 
+Đã thêm script `novembrehiver_wp.py` để tải truyện từ `novembrehiver.wordpress.com`, tự động lấy cover, resize ảnh, lưu HTML chương và tạo EPUB:
+
+```bash
+python novembrehiver_wp.py https://novembrehiver.wordpress.com/trang-sang-ngan-van-dam-tung-ho-khuu-hoa/
+```
+
 ## 📁 Cấu trúc thư mục
 
 ```

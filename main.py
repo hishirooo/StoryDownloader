@@ -98,6 +98,12 @@ DOMAIN_MODULE_MAP = {
     # zhaoshuyuan
     "zhaoshuyuan.net": "zhaoshuyuan",
     "www.zhaoshuyuan.net": "zhaoshuyuan",
+    # dienha
+    "dienha.com": "dienha",
+    "www.dienha.com": "dienha",
+    # khoaitay
+    "khoaitay.cc": "khoaitay",
+    "www.khoaitay.cc": "khoaitay",
 }
 
 def _strip_common_prefixes(domain: str) -> str:
